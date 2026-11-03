@@ -283,6 +283,11 @@ pub struct Battle {
     pub rng: Rng,
     /// Monsters slain this battle, for the roster's tally.
     pub kills: Vec<(UnitId, UnitId)>,
+    /// The dungeon's level, 1..=3: monsters hit harder and last longer the deeper it goes.
+    pub level: u8,
+    /// The skill being resolved, for its rank's effect bonus.
+    casting: Option<&'static SkillDef>,
+    caster: Option<UnitId>,
 }
 
 impl Battle {
@@ -337,6 +342,33 @@ impl Battle {
             outcome: None,
             rng,
             kills: Vec::new(),
+            level: 1,
+            casting: None,
+            caster: None,
+        }
+    }
+
+    /// Set the dungeon level, toughening the monster line to match.
+    pub fn with_level(mut self, level: u8) -> Battle {
+        self.level = level.clamp(1, 3);
+        let mult = 100 + 30 * i32::from(self.level - 1);
+        for &m in &self.monsters {
+            let u = &mut self.units[m];
+            u.max_hp = u.max_hp * mult / 100;
+            u.hp = u.max_hp;
+        }
+        self
+    }
+
+    fn current_rank(&self, skill: &SkillDef) -> i32 {
+        self.caster.map_or(1, |c| self.skill_rank(c, skill))
+    }
+
+    /// The rank a unit wields a skill at: a hero's trained rank, a monster's dungeon level.
+    pub fn skill_rank(&self, id: UnitId, skill: &SkillDef) -> i32 {
+        match &self.units[id].kind {
+            UnitKind::Hero(h) => i32::from(h.rank(skill.id)),
+            UnitKind::Monster(_) => i32::from(self.level),
         }
     }
 
@@ -379,9 +411,26 @@ impl Battle {
     /// An effective stat: base, gear, quirks, statuses and the light.
     pub fn stat(&self, id: UnitId, stat: Stat) -> i32 {
         let u = &self.units[id];
+        let lvl = i32::from(self.level) - 1;
         let (base, mods) = match &u.kind {
+            // Max HP and death-blow resistance are already folded into the hero's stats.
+            UnitKind::Hero(h) if matches!(stat, Stat::MaxHp | Stat::DeathBlowRes) => (h.stats(), 0),
             UnitKind::Hero(h) => (h.stats(), h.mod_total(stat)),
-            UnitKind::Monster(m) => (m.base, 0),
+            UnitKind::Monster(m) => (
+                m.base,
+                match stat {
+                    Stat::Acc => 5 * lvl,
+                    Stat::Dmg => 15 * lvl,
+                    Stat::Speed => lvl,
+                    Stat::Dodge => 3 * lvl,
+                    Stat::StunRes
+                    | Stat::BleedRes
+                    | Stat::BlightRes
+                    | Stat::DebuffRes
+                    | Stat::MoveRes => 10 * lvl,
+                    _ => 0,
+                },
+            ),
         };
         let statuses: i32 = u
             .statuses
@@ -419,7 +468,8 @@ impl Battle {
             Stat::DebuffRes => base.res.debuff,
             Stat::MoveRes => base.res.moves,
             Stat::StressTaken => light.stress,
-            Stat::HealRecv => 0,
+            Stat::HealRecv | Stat::HealOut | Stat::MaxHp => 0,
+            Stat::DeathBlowRes => base.res.death_blow,
         };
         // Death's Door saps a hero's hand.
         let door = if u.deaths_door {
@@ -505,13 +555,18 @@ impl Battle {
             return 100;
         }
         if self.units[target].corpse || self.units[target].stunned() {
-            return 95.min(skill.acc + self.stat(actor, Stat::Acc));
+            return 95.min(
+                skill.acc + 4 * (self.skill_rank(actor, skill) - 1) + self.stat(actor, Stat::Acc),
+            );
         }
-        (skill.acc + self.stat(actor, Stat::Acc) - self.stat(target, Stat::Dodge)).clamp(5, 95)
+        let rank = 4 * (self.skill_rank(actor, skill) - 1);
+        (skill.acc + rank + self.stat(actor, Stat::Acc) - self.stat(target, Stat::Dodge))
+            .clamp(5, 95)
     }
 
     pub fn crit_chance(&self, actor: UnitId, skill: &SkillDef) -> i32 {
-        (self.stat(actor, Stat::Crit) + skill.crit_mod).clamp(0, 95)
+        (self.stat(actor, Stat::Crit) + skill.crit_mod + self.skill_rank(actor, skill) - 1)
+            .clamp(0, 95)
     }
 
     /// The damage a skill would roll before protection, as a range.
@@ -527,7 +582,10 @@ impl Battle {
     }
 
     fn damage_pct(&self, actor: UnitId, skill: &SkillDef, target: UnitId) -> i32 {
-        let mut pct = 100 + skill.dmg_mod + self.stat(actor, Stat::Dmg);
+        let mut pct = 100
+            + skill.dmg_mod
+            + self.stat(actor, Stat::Dmg)
+            + 8 * (self.skill_rank(actor, skill) - 1);
         if let (Some((tag, bonus)), Some(m)) = (skill.bonus_vs, self.units[target].monster()) {
             if m.has_tag(tag) {
                 pct += bonus;
@@ -774,8 +832,14 @@ impl Battle {
 
     fn monster_turn(&mut self, id: UnitId) {
         let skills = self.units[id].skills();
+        let side = self.units[id].side;
+        let hurt = self
+            .standing(side)
+            .iter()
+            .any(|&a| self.units[a].hp * 4 < self.units[a].max_hp * 3);
         let usable: Vec<usize> = (0..skills.len())
             .filter(|&i| self.can_use(id, skills[i]))
+            .filter(|&i| skills[i].heal.is_none() || hurt)
             .collect();
         if usable.is_empty() {
             // Wrong rank for everything: shuffle toward where a skill works.
@@ -816,6 +880,8 @@ impl Battle {
     // ---------------------------------------------------------------- resolution
 
     fn use_skill(&mut self, actor: UnitId, skill: &'static SkillDef, aim: UnitId) {
+        self.casting = Some(skill);
+        self.caster = Some(actor);
         let affected = self.affected(actor, skill, aim);
         self.events.push(Event::Skill {
             actor,
@@ -951,6 +1017,9 @@ impl Battle {
                 .rng
                 .percent(self.stat(actor, Stat::Crit) + skill.crit_mod + 5);
             let mut amt = self.rng.range(lo, hi);
+            let boost =
+                100 + self.stat(actor, Stat::HealOut) + 15 * (self.skill_rank(actor, skill) - 1);
+            amt = (amt * boost + 50) / 100;
             // Healers scale a little with their level.
             if let Some(h) = self.units[actor].hero() {
                 amt += i32::from(h.level) / 2;
@@ -1005,7 +1074,7 @@ impl Battle {
             Side::Heroes => {
                 if u.deaths_door {
                     let resist = match &u.kind {
-                        UnitKind::Hero(h) => h.stats().res.death_blow,
+                        UnitKind::Hero(_) => self.stat(target, Stat::DeathBlowRes),
                         UnitKind::Monster(_) => 0,
                     };
                     if self.rng.percent(resist) {
@@ -1111,6 +1180,10 @@ impl Battle {
         crit: bool,
         label: &'static str,
     ) -> bool {
+        let chance = chance
+            + self
+                .casting
+                .map_or(0, |sk| 10 * (self.current_rank(sk) - 1));
         let chance = chance + if crit { 20 } else { 0 } - self.stat(target, stat);
         if self.rng.percent(chance) {
             false
@@ -1335,6 +1408,7 @@ impl Battle {
                 UnitKind::Hero(h) => {
                     let mut h = *h;
                     h.hp = u.hp;
+                    h.camp_buffs.clear();
                     h.kills += kills.iter().filter(|(k, _)| *k == id).count() as u32;
                     Some((h, u.alive))
                 }
@@ -1390,7 +1464,17 @@ mod tests {
         ]
         .iter()
         .enumerate()
-        .map(|(i, c)| Hero::new(i as u32, *c, format!("H{i}"), rng))
+        .map(|(i, c)| {
+            let mut h = Hero::new(i as u32, *c, format!("H{i}"), rng);
+            h.skills = c
+                .def()
+                .skills
+                .iter()
+                .take(4)
+                .map(|s| s.id.to_owned())
+                .collect();
+            h
+        })
         .collect()
     }
 
@@ -1495,5 +1579,54 @@ mod tests {
         b.take_damage(front, 999, None);
         assert!(b.units[front].corpse);
         assert_eq!(b.rank_of(b.monsters[1]), 2);
+    }
+
+    #[test]
+    fn skill_ranks_raise_accuracy_and_damage() {
+        let mut rng = Rng::new(1);
+        let mut heroes = party(&mut rng);
+        heroes[0].skills = vec!["mortal_strike".into()];
+        let b0 = Battle::new(heroes.clone(), &pack(), 80, Rng::new(2));
+        let w = b0.heroes[0];
+        let s = b0.units[w].skills()[0];
+        let t = b0.monsters[0];
+        let (hit0, pct0) = (b0.hit_chance(w, s, t), b0.damage_pct(w, s, t));
+        heroes[0].set_rank(s.id, 4);
+        let b1 = Battle::new(heroes, &pack(), 80, Rng::new(2));
+        assert!(b1.hit_chance(w, s, t) > hit0 || hit0 == 95);
+        assert_eq!(b1.damage_pct(w, s, t), pct0 + 24);
+    }
+
+    #[test]
+    fn deeper_dungeons_toughen_monsters() {
+        let mut rng = Rng::new(1);
+        let b1 = Battle::new(party(&mut rng), &pack(), 80, Rng::new(2));
+        let mut rng = Rng::new(1);
+        let b3 = Battle::new(party(&mut rng), &pack(), 80, Rng::new(2)).with_level(3);
+        let m = b1.monsters[0];
+        assert!(b3.units[m].max_hp > b1.units[m].max_hp);
+        assert!(b3.stat(m, Stat::Acc) > b1.stat(m, Stat::Acc));
+    }
+
+    #[test]
+    fn trinkets_and_talents_feed_stats() {
+        let mut rng = Rng::new(1);
+        let mut h = Hero::new(
+            1,
+            super::super::data::HeroClass::Warrior,
+            "W".into(),
+            &mut rng,
+        );
+        h.quirks.clear();
+        let base = h.stats().dmg;
+        let crit = h.mod_total(Stat::Crit);
+        h.equip(0, Some("whetstone".into())).unwrap();
+        assert_eq!(h.mod_total(Stat::Dmg), 10);
+        h.grant_xp(2);
+        assert!(h.learn_talent("w_cruelty"));
+        assert_eq!(h.mod_total(Stat::Crit), crit + 5);
+        assert!(!h.learn_talent("w_toughness"), "one per tier");
+        assert!(h.equip(1, Some("libram".into())).is_err(), "paladin only");
+        let _ = base;
     }
 }

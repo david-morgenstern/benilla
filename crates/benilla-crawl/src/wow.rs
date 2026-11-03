@@ -12,7 +12,9 @@ use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
-use benilla_assets::{bone_target_id, m2_url, skin_url, texture_url, M2Model, ModelAnimations};
+use benilla_assets::{
+    bone_target_id, m2_url, skin_url, texture_url, wmo_url, M2Model, ModelAnimations, WmoModel,
+};
 use benilla_formats::{
     AnimDataCatalog, BlpTexels, Chain, CharSections, CharSkinSlot, CharacterGeosets, ChrRaces,
     CreatureCatalog, EquipGeosets, ItemDisplayCatalog, ModelBlend,
@@ -115,6 +117,8 @@ pub enum ModelSource {
     Character(Box<CharLook>),
     /// A doodad or item M2 by path, with an optional texture for its object slot.
     Prop(String, Option<String>),
+    /// A WMO building by path, with its first doodad set and fixture lights.
+    Wmo(String),
 }
 
 /// Ask for a model on this entity; it is built under it once the M2 loads.
@@ -192,8 +196,10 @@ pub struct WowPlugin;
 
 impl Plugin for WowPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<BodyCache>()
-            .add_systems(Update, (start_loads, build_models, drive_anims).chain());
+        app.init_resource::<BodyCache>().add_systems(
+            Update,
+            (start_loads, build_models, build_wmos, drive_anims).chain(),
+        );
     }
 }
 
@@ -209,16 +215,19 @@ fn model_path(data: &WowData, source: &ModelSource) -> Option<String> {
             let sex = if look.sex == 1 { "Female" } else { "Male" };
             Some(format!("Character\\{race}\\{sex}\\{race}{sex}.m2"))
         }
-        ModelSource::Prop(p, _) => Some(p.clone()),
+        ModelSource::Prop(p, _) | ModelSource::Wmo(p) => Some(p.clone()),
     }
 }
+
+#[derive(Component)]
+struct PendingWmo(Handle<WmoModel>);
 
 #[allow(clippy::type_complexity)]
 fn start_loads(
     mut commands: Commands,
     data: Option<Res<WowData>>,
     asset_server: Res<AssetServer>,
-    new: Query<(Entity, &WowModel), (Without<Pending>, Without<Rig>)>,
+    new: Query<(Entity, &WowModel), (Without<Pending>, Without<PendingWmo>, Without<Rig>)>,
 ) {
     let Some(data) = data else {
         return;
@@ -229,6 +238,12 @@ fn start_loads(
             commands.entity(e).remove::<WowModel>();
             continue;
         };
+        if let ModelSource::Wmo(p) = &req.source {
+            commands
+                .entity(e)
+                .insert(PendingWmo(asset_server.load(wmo_url(p))));
+            continue;
+        }
         let mut attachments = Vec::new();
         if let ModelSource::Character(look) = &req.source {
             attachments = item_attachments(&data, look, &asset_server);
@@ -505,6 +520,7 @@ fn build_models(
                     &eq,
                 ));
             }
+            ModelSource::Wmo(_) => {}
             ModelSource::Prop(_, tex) => {
                 object_tex = tex
                     .as_ref()
@@ -752,5 +768,130 @@ fn drive_anims(
             active.repeat();
         }
         rig.playing = Some(key);
+    }
+}
+
+/// WoW's model-space quaternion in Bevy's basis; the axis swap is a proper rotation, so the
+/// vector part maps like a position.
+fn wow_quat(q: [f32; 4]) -> Quat {
+    let v = benilla_assets::coords::wow_to_bevy([q[0], q[1], q[2]]);
+    Quat::from_xyzw(v.x, v.y, v.z, q[3]).normalize()
+}
+
+fn build_wmos(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    wmos: Res<Assets<WmoModel>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    pending: Query<(Entity, &WowModel, &PendingWmo)>,
+) {
+    for (e, req, p) in &pending {
+        let Some(w) = wmos.get(&p.0) else {
+            if let Some(bevy::asset::LoadState::Failed(err)) = asset_server.get_load_state(&p.0) {
+                warn!("crawl: building failed to load for {:?}: {err}", req.source);
+                commands.entity(e).remove::<(PendingWmo, WowModel)>();
+            }
+            continue;
+        };
+        // Centre the building on its footprint, its floor on the ground.
+        let offset = w.collision_bounds.map_or(Vec3::ZERO, |(lo, hi)| {
+            let (a, b) = (
+                benilla_assets::coords::wow_to_bevy(lo),
+                benilla_assets::coords::wow_to_bevy(hi),
+            );
+            let (mn, mx) = (a.min(b), a.max(b));
+            Vec3::new(-(mn.x + mx.x) / 2.0, -mn.y, -(mn.z + mx.z) / 2.0)
+        });
+        let root = commands
+            .spawn((Transform::from_translation(offset), Visibility::default()))
+            .id();
+        commands.entity(e).add_child(root);
+        for sub in &w.submeshes {
+            let Some(mat) = material_for(
+                sub.blend,
+                sub.additive,
+                sub.two_sided,
+                sub.emissive,
+                sub.texture.clone(),
+            ) else {
+                continue;
+            };
+            let mut mesh = skinned_mesh(&sub.geometry, false);
+            // Interiors carry their baked light in the vertex colours.
+            let g = &sub.geometry;
+            if sub.interior && g.vertex_colors.len() == g.positions.len() {
+                let cols: Vec<[f32; 4]> = g
+                    .vertex_colors
+                    .iter()
+                    .map(|c| [c[0] * 1.6, c[1] * 1.6, c[2] * 1.6, 1.0])
+                    .collect();
+                mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, cols);
+            }
+            let mat = materials.add(mat);
+            let part = commands
+                .spawn((
+                    Mesh3d(meshes.add(mesh)),
+                    MeshMaterial3d(mat.clone()),
+                    Transform::default(),
+                    ModelPart {
+                        owner: e,
+                        material: mat,
+                    },
+                ))
+                .id();
+            commands.entity(root).add_child(part);
+        }
+        // Set 0, the doodads every placement shows.
+        if let Some(set) = w.doodad_sets.first() {
+            let start = set.start as usize;
+            for d in w.doodads.iter().skip(start).take(set.count as usize) {
+                if d.model.is_empty() {
+                    continue;
+                }
+                let child = commands
+                    .spawn((
+                        Transform {
+                            translation: benilla_assets::coords::wow_to_bevy(d.position),
+                            rotation: wow_quat(d.orientation),
+                            scale: Vec3::splat(d.scale),
+                        },
+                        Visibility::default(),
+                        WowModel {
+                            source: ModelSource::Prop(d.model.clone(), None),
+                            height: None,
+                        },
+                    ))
+                    .id();
+                commands.entity(root).add_child(child);
+            }
+        }
+        // A handful of its fixture lights, warm through the windows.
+        for l in w.lights.iter().filter(|l| l.is_omni()).take(4) {
+            let light = commands
+                .spawn((
+                    PointLight {
+                        color: Color::srgb(l.color[0], l.color[1], l.color[2]),
+                        intensity: 40_000.0 * l.intensity.clamp(0.2, 2.0),
+                        range: l.attenuation_end.clamp(4.0, 14.0),
+                        shadows_enabled: false,
+                        ..default()
+                    },
+                    Transform::from_translation(benilla_assets::coords::wow_to_bevy(l.position)),
+                ))
+                .id();
+            commands.entity(root).add_child(light);
+        }
+        let height = w
+            .collision_bounds
+            .map_or(8.0, |(lo, hi)| (hi[2] - lo[2]).abs());
+        commands.entity(e).remove::<PendingWmo>().insert(Rig {
+            root,
+            head: None,
+            joints: Vec::new(),
+            anims: None,
+            height,
+            playing: None,
+        });
     }
 }

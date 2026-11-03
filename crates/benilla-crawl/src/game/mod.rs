@@ -12,6 +12,7 @@ pub mod looks;
 pub mod portrait;
 pub mod stage;
 pub mod title;
+pub mod town;
 pub mod ui;
 
 #[derive(States, Default, Clone, Copy, Eq, PartialEq, Hash, Debug)]
@@ -32,6 +33,10 @@ pub struct Game(pub Campaign);
 #[derive(Resource)]
 pub struct Run(pub Expedition);
 
+/// The offer the expedition under way was taken from, for its reward.
+#[derive(Resource, Default)]
+pub struct ActiveOffer(pub Option<crate::rules::regions::QuestOffer>);
+
 /// What the last expedition brought home.
 #[derive(Resource, Default)]
 pub struct LastDebrief(pub Option<Debrief>);
@@ -46,6 +51,7 @@ impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
         app.init_state::<Screen>()
             .init_resource::<LastDebrief>()
+            .init_resource::<ActiveOffer>()
             .add_plugins((
                 ui::UiPlugin,
                 title::TitlePlugin,
@@ -54,6 +60,7 @@ impl Plugin for GamePlugin {
                 explore::ExplorePlugin,
                 battle::BattlePlugin,
                 portrait::PortraitPlugin,
+                town::TownPlugin,
             ))
             .add_systems(Update, autostart.run_if(in_state(Screen::Title)));
         for s in [
@@ -102,6 +109,10 @@ pub fn save_path() -> std::path::PathBuf {
 }
 
 pub fn save(c: &Campaign) {
+    // Seeded test campaigns never touch the player's save.
+    if std::env::var("CRAWL_AUTOSTART").is_ok() {
+        return;
+    }
     let path = save_path();
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
@@ -121,9 +132,10 @@ pub fn load_save() -> Option<Campaign> {
     Campaign::from_json(&s).ok()
 }
 
-/// `CRAWL_AUTOSTART=hamlet|dungeon|battle` jumps past the title with a seeded campaign, for
-/// screenshots and smoke runs; it never touches the save.
+/// `CRAWL_AUTOSTART=hamlet|map|dungeon|battle|boss|warrens|grotto` jumps past the title with a
+/// seeded campaign, for screenshots and smoke runs; it never touches the save.
 fn autostart(mut commands: Commands, mut next: ResMut<NextState<Screen>>, mut done: Local<bool>) {
+    use crate::rules::regions::{Length, QuestKind, QuestOffer, Region};
     if *done {
         return;
     }
@@ -132,24 +144,62 @@ fn autostart(mut commands: Commands, mut next: ResMut<NextState<Screen>>, mut do
         return;
     };
     let mut c = Campaign::new(Some(7));
+    if std::env::var("CRAWL_RICH").is_ok() {
+        c.gold = 50_000;
+        for h in crate::rules::dungeon::Heirloom::ALL {
+            c.heirlooms.insert(h, 60);
+        }
+        c.trinkets.extend(
+            ["tin_locket", "whetstone", "warding_rune", "stormwind_crest"].map(str::to_owned),
+        );
+        for h in &mut c.roster {
+            h.grant_xp(4);
+        }
+    }
     match mode.as_str() {
         "hamlet" => {
             commands.insert_resource(Game(c));
             next.set(Screen::Hamlet);
         }
-        "dungeon" | "battle" | "boss" => {
+        "map" => {
+            commands.insert_resource(Game(c));
+            next.set(Screen::Provision);
+        }
+        _ => {
+            let region = match mode.as_str() {
+                "warrens" => Region::Warrens,
+                "grotto" => Region::Grotto,
+                _ => Region::Crypts,
+            };
+            let boss = mode == "boss";
+            let offer = QuestOffer {
+                region,
+                length: Length::Medium,
+                kind: if boss {
+                    QuestKind::Boss
+                } else {
+                    QuestKind::Explore
+                },
+                level: 1,
+                reward_gold: 2000,
+                reward_heirlooms: 8,
+                reward_trinket: true,
+            };
             let ids: Vec<u32> = c.roster.iter().map(|h| h.id).collect();
-            let quest = crate::rules::dungeon::Quest::Explore(90);
-            if let Some(run) = c.embark(&ids, crate::rules::town::default_pack(), quest) {
+            if let Some(run) = c.embark(
+                &ids,
+                crate::rules::town::default_pack(Length::Medium),
+                &offer,
+            ) {
                 commands.insert_resource(Run(run));
             }
+            commands.insert_resource(ActiveOffer(Some(offer)));
             commands.insert_resource(Game(c));
             if mode != "dungeon" {
-                let boss = mode == "boss";
                 let pack: &[&str] = if boss {
-                    crate::rules::data::CRYPT_BOSS_PACK
+                    region.boss_pack()
                 } else {
-                    crate::rules::data::CRYPT_PACKS[1]
+                    region.packs()[1]
                 };
                 commands.insert_resource(battle::PendingBattle {
                     pack: pack.iter().map(|s| (*s).to_owned()).collect(),
@@ -158,6 +208,5 @@ fn autostart(mut commands: Commands, mut next: ResMut<NextState<Screen>>, mut do
             }
             next.set(Screen::Dungeon);
         }
-        _ => {}
     }
 }

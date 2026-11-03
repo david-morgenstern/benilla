@@ -21,6 +21,8 @@ pub enum Mode {
     Battle,
     Curio(String),
     Obstacle,
+    /// Around the fire, planning the night's camp skills.
+    Camp,
 }
 
 #[derive(Resource)]
@@ -35,6 +37,8 @@ pub struct Explore {
     /// The hall the party entered its current room by, for a retreat.
     pub came_from: Option<usize>,
     last_light: i32,
+    /// The camp skills planned for tonight: (hero index, skill id, target hero index).
+    camp: Vec<(usize, &'static str, Option<usize>)>,
 }
 
 #[derive(Component, Clone)]
@@ -47,6 +51,10 @@ enum Act {
     Clear,
     UseItem(Item),
     Leave,
+    Camp,
+    CampUse(usize, &'static str),
+    CampUndo,
+    CampRest,
 }
 
 #[derive(Component)]
@@ -84,11 +92,15 @@ fn enter(
     run: Res<Run>,
     data: Res<WowData>,
     mut narrator: ResMut<Narrator>,
+    mut music: ResMut<crate::audio::Music>,
 ) {
     narrator.clear();
-    narrator.say(
-        "The stair winds down into the Sunken Crypts. The air tastes of dust and old candles.",
-    );
+    *music = crate::audio::Music::Explore(run.0.dungeon.quest.region);
+    narrator.say(match run.0.dungeon.quest.region {
+        crate::rules::regions::Region::Crypts => "The stair winds down into the Sunken Crypts. The air tastes of dust and old candles.",
+        crate::rules::regions::Region::Warrens => "Down the old mineshaft. Somewhere ahead, a thousand candles flicker, and something squeaks.",
+        crate::rules::regions::Region::Grotto => "The cellar stair ends in black water. The walls sweat brine, and something sings.",
+    });
     narrator.say(run.0.dungeon.quest.label());
     for (i, h) in run.0.party.iter().enumerate() {
         spawn_hero(&mut commands, &data, h, i);
@@ -101,6 +113,7 @@ fn enter(
         prop: None,
         came_from: None,
         last_light: run.0.light,
+        camp: Vec::new(),
     });
 }
 
@@ -161,6 +174,12 @@ fn notes_to_narrator(notes: &[Note], run: &Run, narrator: &mut Narrator) {
             Note::Died { .. } => {
                 narrator.say("A heart stops in the dark. The others do not look back.")
             }
+            Note::Trinket(id) => {
+                if let Some(t) = crate::rules::items::trinket(id) {
+                    narrator.say(format!("A trinket: {} ({}).", t.name, t.rarity.name()));
+                }
+            }
+            Note::Scouted => narrator.say("The torchlight reaches far down the halls. Scouted."),
             _ => {}
         }
     }
@@ -307,8 +326,15 @@ fn walk(
     let walking = ex.mode == Mode::Walking || (held && in_hall && ex.mode == Mode::Idle);
     for (a, mut p) in &mut anims {
         if a.side == Side::Heroes {
-            let want = if walking { anim::WALK } else { anim::STAND };
-            if p.looping && p.id != want && (p.id == anim::WALK || p.id == anim::STAND) {
+            let want = if ex.mode == Mode::Camp {
+                anim::SIT_GROUND
+            } else if walking {
+                anim::WALK
+            } else {
+                anim::STAND
+            };
+            let idle = [anim::WALK, anim::STAND, anim::SIT_GROUND];
+            if p.looping && p.id != want && idle.contains(&p.id) {
                 *p = PlayAnim::looped(want);
             }
         }
@@ -431,6 +457,8 @@ fn act(
     fonts: Res<ui::Fonts>,
     actors: Query<(&Actor, &GlobalTransform)>,
     mut auto: ResMut<AutoQueue>,
+    offer: Res<super::ActiveOffer>,
+    mut sfx: ResMut<crate::audio::Sfx>,
 ) {
     let mut acts: Vec<Act> = q
         .iter()
@@ -514,11 +542,73 @@ fn act(
                         exp.stress_hero(h, 20, &mut notes);
                     }
                 }
-                let d = game.0.debrief(exp, success);
+                let d = game.0.debrief(exp, success, offer.0.as_ref());
                 last.0 = Some(d);
                 commands.remove_resource::<Run>();
                 next.set(Screen::Debrief);
                 return;
+            }
+            Act::Camp => {
+                if run.0.can_camp() {
+                    ex.mode = Mode::Camp;
+                    ex.camp.clear();
+                    narrator.say("The party makes camp. The fire is small, and the dark is large.");
+                    let e = commands
+                        .spawn((
+                            Transform::from_xyz(-3.2, 0.0, 1.4),
+                            Visibility::default(),
+                            WowModel {
+                                source: ModelSource::Prop("World\\Azeroth\\Elwynn\\PassiveDoodads\\Campfire\\ElwynnCampfire.m2".into(), None),
+                                height: Some(0.8),
+                            },
+                            PointLight { color: Color::srgb(1.0, 0.55, 0.2), intensity: 400_000.0, range: 10.0, ..default() },
+                            Scoped(Screen::Dungeon),
+                        ))
+                        .id();
+                    ex.prop = Some(e);
+                }
+            }
+            Act::CampUse(hero, skill) => {
+                let used: u8 = ex
+                    .camp
+                    .iter()
+                    .filter_map(|(_, id, _)| crate::rules::camp::camp_skill(id))
+                    .map(|s| s.hours)
+                    .sum();
+                if let Some(cs) = crate::rules::camp::camp_skill(skill) {
+                    let dup = ex.camp.iter().any(|(h, id, _)| *h == hero && *id == skill);
+                    if !dup && used + cs.hours <= crate::rules::camp::CAMP_HOURS {
+                        let target = (cs.target == crate::rules::camp::CampTarget::Ally)
+                            .then_some(ex.selected);
+                        ex.camp.push((hero, skill, target));
+                    }
+                }
+            }
+            Act::CampUndo => {
+                ex.camp.pop();
+            }
+            Act::CampRest => {
+                let uses: Vec<_> = ex
+                    .camp
+                    .iter()
+                    .filter_map(|(h, id, t)| {
+                        crate::rules::camp::camp_skill(id).map(|s| (*h, s, *t))
+                    })
+                    .collect();
+                let report = run.0.camp(&uses);
+                notes_to_narrator(&report.notes, &run, &mut narrator);
+                notes_to_floaters(&mut commands, &fonts, &report.notes, &run, &actors);
+                if let Some(e) = ex.prop.take() {
+                    commands.entity(e).despawn();
+                }
+                ex.camp.clear();
+                if let Some(pack) = report.ambush {
+                    sfx.play(crate::audio::AFFLICTION, -4.0);
+                    commands.insert_resource(PendingBattle { pack, boss: false });
+                    ex.mode = Mode::Battle;
+                } else {
+                    ex.mode = Mode::Idle;
+                }
             }
         }
     }
@@ -539,11 +629,12 @@ fn check_wipe(
     mut game: ResMut<Game>,
     mut last: ResMut<LastDebrief>,
     mut next: ResMut<NextState<Screen>>,
+    offer: Res<super::ActiveOffer>,
 ) {
     if ex.mode == Mode::Battle || !run.0.party.is_empty() {
         return;
     }
-    let d = game.0.debrief(run.0.clone(), false);
+    let d = game.0.debrief(run.0.clone(), false, offer.0.as_ref());
     last.0 = Some(d);
     commands.remove_resource::<Run>();
     next.set(Screen::Debrief);
@@ -611,17 +702,18 @@ fn hud(
                 ..default()
             })
             .with_children(|c| {
-                c.spawn(kit.title(r.dungeon.name.clone(), 26.0, GOLD));
+                c.spawn(kit.title(r.dungeon.quest.title(), 24.0, GOLD));
                 c.spawn(kit.text(
                     format!(
-                        "{} — explored {}%{}",
+                        "{} — {}{}  ·  firewood {}",
                         r.dungeon.quest.label(),
-                        r.dungeon.explored_pct(),
+                        r.dungeon.progress(),
                         if r.dungeon.quest_done() {
                             " (complete)"
                         } else {
                             ""
-                        }
+                        },
+                        r.firewood
                     ),
                     14.0,
                     if r.dungeon.quest_done() { HEAL } else { DIM },
@@ -725,7 +817,29 @@ fn hud(
                                         ..default()
                                     },
                                     Interaction::default(),
-                                    Tip(super::hamlet::skill_tooltip(s)),
+                                    Tip(super::hamlet::skill_tooltip_ranked(s, h.rank(s.id))),
+                                ));
+                            }
+                            for t in h
+                                .trinkets
+                                .iter()
+                                .flatten()
+                                .filter_map(|t| crate::rules::items::trinket(t))
+                            {
+                                let icon = kit.icon(t.icon);
+                                let (r, g, b) = t.rarity.color();
+                                row.spawn((
+                                    ImageNode::new(icon),
+                                    Node {
+                                        width: Val::Px(40.0),
+                                        height: Val::Px(40.0),
+                                        border: UiRect::all(Val::Px(2.0)),
+                                        margin: UiRect::left(Val::Px(6.0)),
+                                        ..default()
+                                    },
+                                    BorderColor::all(Color::srgb(r, g, b)),
+                                    Interaction::default(),
+                                    Tip(t.summary()),
                                 ));
                             }
                         });
@@ -867,7 +981,20 @@ fn hud(
                                 });
                             } else {
                                 c.spawn(kit.text("Choose a passage on the map.", 15.0, DIM));
+                                if r.firewood > 0 {
+                                    ui::button(
+                                        c,
+                                        &kit,
+                                        "Make Camp (firewood)",
+                                        Act::Camp,
+                                        r.can_camp(),
+                                    );
+                                }
                             }
+                        }
+                        Mode::Camp => {
+                            c.spawn(kit.title("Camp", 22.0, GOLD));
+                            c.spawn(kit.text("Plan the night above, then rest.", 14.0, DIM));
                         }
                         Mode::Battle => {}
                     }
@@ -890,6 +1017,83 @@ fn hud(
                 });
             // Map.
             map(bottom, &kit, r, matches!(ex.mode, Mode::Idle));
+        });
+    if ex.mode == Mode::Camp {
+        camp_panel(&mut commands, &mut kit, &ex, r);
+    }
+}
+
+/// The camp planner: each hero's camp skills, the hours left, and the rest button.
+fn camp_panel(
+    commands: &mut Commands,
+    kit: &mut Kit,
+    ex: &Explore,
+    r: &crate::rules::dungeon::Expedition,
+) {
+    use crate::rules::camp::{camp_skill, known, CampTarget, CAMP_HOURS};
+    let used: u8 = ex
+        .camp
+        .iter()
+        .filter_map(|(_, id, _)| camp_skill(id))
+        .map(|s| s.hours)
+        .sum();
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(110.0),
+                left: Val::Percent(18.0),
+                width: Val::Percent(64.0),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(6.0),
+                padding: UiRect::all(Val::Px(14.0)),
+                border: UiRect::all(Val::Px(2.0)),
+                ..default()
+            },
+            BackgroundColor(ui::PANEL),
+            BorderColor::all(EDGE),
+            GlobalZIndex(20),
+            HudRoot,
+            Scoped(Screen::Dungeon),
+        ))
+        .with_children(|p| {
+            p.spawn(kit.title(format!("The Night's Camp — {} of {CAMP_HOURS} hours left", CAMP_HOURS - used), 26.0, GOLD));
+            p.spawn(kit.text(
+                "Each hero may use each of their camp skills once. Skills on an ally target the hero selected on the stage. The party eats on resting.",
+                13.0,
+                DIM,
+            ));
+            for (i, h) in r.party.iter().enumerate() {
+                p.spawn(Node { column_gap: Val::Px(8.0), align_items: AlignItems::Center, ..default() }).with_children(|row| {
+                    row.spawn((kit.title(h.name.clone(), 17.0, if i == ex.selected { GOLD } else { BONE }), Node { width: Val::Px(120.0), ..default() }));
+                    for cs in known(h.class) {
+                        let done = ex.camp.iter().any(|(hh, id, _)| *hh == i && *id == cs.id);
+                        let fits = used + cs.hours <= CAMP_HOURS;
+                        let icon = kit.icon(cs.icon);
+                        let tgt = match cs.target {
+                            CampTarget::Myself => "self",
+                            CampTarget::Ally => "an ally",
+                            CampTarget::Party => "the party",
+                        };
+                        ui::icon_button(row, icon, 40.0, Act::CampUse(i, cs.id), !done && fits, done, Some(format!("{} ({}h, {tgt})\n{}", cs.name, cs.hours, cs.desc)));
+                    }
+                });
+            }
+            let plan: Vec<String> = ex
+                .camp
+                .iter()
+                .filter_map(|(h, id, t)| {
+                    let s = camp_skill(id)?;
+                    let who = r.party.get(*h)?.name.clone();
+                    let on = t.and_then(|t| r.party.get(t)).map_or(String::new(), |x| format!(" on {}", x.name));
+                    Some(format!("{who}: {}{on}", s.name))
+                })
+                .collect();
+            p.spawn(kit.text(if plan.is_empty() { "Nothing planned.".to_owned() } else { plan.join("  ·  ") }, 14.0, BONE));
+            p.spawn(Node { column_gap: Val::Px(10.0), ..default() }).with_children(|row| {
+                ui::button(row, kit, "Undo", Act::CampUndo, !ex.camp.is_empty());
+                ui::button_sized(row, kit, "Rest Until Morning", Act::CampRest, true, false, 20.0);
+            });
         });
 }
 
@@ -934,7 +1138,7 @@ fn map(
                     let t = (s as f32 + 1.0) / (n as f32 + 1.0);
                     let pos = ca.lerp(cb, t);
                     let here = matches!(d.at, Location::Hall { hall: hh, seg, toward } if hh == hi && seg != HALL_MOUTH && d.seg_index(hh, seg, toward) == s);
-                    let seen = hall.visited[s];
+                    let seen = hall.visited[s] || hall.scouted.get(s).copied().unwrap_or(false);
                     let color = if here {
                         GOLD
                     } else if seen {
@@ -1031,6 +1235,20 @@ fn autoplay(time: Res<Time>, mut auto: ResMut<AutoQueue>, ex: Res<Explore>, run:
     let r = &run.0;
     match &ex.mode {
         Mode::Curio(_) => auto.0.push(Act::Investigate(None)),
+        Mode::Camp => {
+            if ex.camp.is_empty() {
+                if let Some(h) = r.party.first() {
+                    if let Some(cs) = crate::rules::camp::known(h.class)
+                        .into_iter()
+                        .find(|c| c.class.is_some())
+                    {
+                        auto.0.push(Act::CampUse(0, cs.id));
+                        return;
+                    }
+                }
+            }
+            auto.0.push(Act::CampRest);
+        }
         Mode::Obstacle => auto.0.push(Act::Clear),
         Mode::Idle => {
             if r.light < 40 && r.count(Item::Torch) > 0 {
@@ -1042,6 +1260,12 @@ fn autoplay(time: Res<Time>, mut auto: ResMut<AutoQueue>, ex: Res<Explore>, run:
                 Location::Room(room) => {
                     if r.dungeon.quest_done() {
                         auto.0.push(Act::Leave);
+                        return;
+                    }
+                    let avg =
+                        r.party.iter().map(|h| h.stress).sum::<i32>() / r.party.len().max(1) as i32;
+                    if r.can_camp() && avg > 35 {
+                        auto.0.push(Act::Camp);
                         return;
                     }
                     let exits = r.dungeon.exits(room);

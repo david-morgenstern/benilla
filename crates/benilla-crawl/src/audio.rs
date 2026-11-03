@@ -13,6 +13,7 @@ use kira::sound::streaming::{StreamingSoundData, StreamingSoundHandle};
 use kira::sound::FromFileError;
 use kira::{AudioManager, AudioManagerSettings, Decibels, Tween};
 
+use crate::rules::regions::Region;
 use crate::wow::WowData;
 
 /// kira's output on the default cpal device; the stream lives as long as the backend.
@@ -70,6 +71,9 @@ pub enum Music {
     Crypt,
     Battle,
     Boss,
+    Explore(crate::rules::regions::Region),
+    Fight(crate::rules::regions::Region),
+    Lair(crate::rules::regions::Region),
 }
 
 impl Music {
@@ -96,6 +100,40 @@ impl Music {
                 "Sound\\Music\\ZoneMusic\\Naxxramas\\NaxxramasPlagueWing3.mp3",
             ],
             Music::Boss => &["Sound\\Music\\ZoneMusic\\Naxxramas\\NaxxramasPlagueBoss1.mp3"],
+            Music::Explore(r) => match r {
+                Region::Crypts => Music::Crypt.tracks(),
+                Region::Warrens => &[
+                    "Sound\\Music\\CityMusic\\Gnomeragon\\gnomeragon01-zone.mp3",
+                    "Sound\\Music\\Musical Moments\\mystery\\mystery03-zone.mp3",
+                    "Sound\\Music\\CityMusic\\Gnomeragon\\gnomeragon02-zone.mp3",
+                    "Sound\\Music\\Musical Moments\\mystery\\mystery05-zone.mp3",
+                ],
+                Region::Grotto => &[
+                    "Sound\\Music\\Musical Moments\\swamp\\swamp01.mp3",
+                    "Sound\\Music\\Musical Moments\\gloomy\\gloomy01.mp3",
+                    "Sound\\Music\\Musical Moments\\mystery\\mystery07-zone.mp3",
+                    "Sound\\Music\\Musical Moments\\gloomy\\gloomy02.mp3",
+                ],
+            },
+            Music::Fight(r) => match r {
+                Region::Crypts => Music::Battle.tracks(),
+                Region::Warrens => &[
+                    "Sound\\Music\\ZoneMusic\\Naxxramas\\NaxxramasAbominationWing1.mp3",
+                    "Sound\\Music\\ZoneMusic\\Naxxramas\\NaxxramasAbominationWing2.mp3",
+                    "Sound\\Music\\ZoneMusic\\Naxxramas\\NaxxramasAbominationWing3.mp3",
+                ],
+                Region::Grotto => &[
+                    "Sound\\Music\\ZoneMusic\\Naxxramas\\NaxxramasFrostwyrm1.mp3",
+                    "Sound\\Music\\ZoneMusic\\Naxxramas\\NaxxramasFrostwyrm2.mp3",
+                ],
+            },
+            Music::Lair(r) => match r {
+                Region::Crypts => Music::Boss.tracks(),
+                Region::Warrens => {
+                    &["Sound\\Music\\ZoneMusic\\Naxxramas\\NaxxramasSpiderBoss1.mp3"]
+                }
+                Region::Grotto => &["Sound\\Music\\ZoneMusic\\Naxxramas\\NaxxramasKelThuzad1.mp3"],
+            },
         }
     }
 }
@@ -259,6 +297,30 @@ fn creature_voice(
             &["LichWoundA", "LichWoundB"],
             "LichDeath",
         ),
+        "kobold_digger" | "kobold_geomancer" | "kobold_taskmaster" => (
+            "Sound\\Creature\\Kobold\\",
+            &["mKoboldAttackA", "mKoboldAttackB", "mKoboldAttackC"],
+            &["mKoboldWoundA", "mKoboldWoundB"],
+            "mKoboldDeathA",
+        ),
+        "rat" | "cave_creeper" | "gut_worm" | "broodmother" => (
+            "Sound\\Creature\\GiantSpider\\",
+            &["GiantSpiderAttackA", "GiantSpiderAttackB"],
+            &["GiantSpiderWoundA"],
+            "GiantSpiderWoundDeath",
+        ),
+        "murloc_raider" | "murloc_oracle" => (
+            "Sound\\Creature\\Murloc\\",
+            &["mMurlocAttackA", "mMurlocAttackB"],
+            &["mMurlocWoundA", "mMurlocWoundB"],
+            "mMurlocDeath2a",
+        ),
+        "siren" | "myrmidon" | "matriarch" | "crab" | "lobstrok" => (
+            "Sound\\Creature\\Banshee\\",
+            &["BansheeAttackA", "BansheeAttackB", "BansheeAttackC"],
+            &["BansheeWoundA", "BansheeWoundB"],
+            "BansheeDeathA",
+        ),
         _ => (
             "Sound\\Creature\\Skeleton\\",
             &[
@@ -396,13 +458,17 @@ mod tests {
         };
         let mut chain = benilla_formats::open_chain(std::path::Path::new(&dir)).expect("chain");
         let mut paths: Vec<String> = Vec::new();
-        for m in [
+        let mut all = vec![
             Music::Title,
             Music::Hamlet,
             Music::Crypt,
             Music::Battle,
             Music::Boss,
-        ] {
+        ];
+        for r in Region::ALL {
+            all.extend([Music::Explore(r), Music::Fight(r), Music::Lair(r)]);
+        }
+        for m in all {
             paths.extend(m.tracks().iter().map(|s| (*s).to_owned()));
         }
         for id in [
@@ -412,6 +478,15 @@ mod tests {
             "necrolyte",
             "abomination",
             "lich",
+            "kobold_digger",
+            "rat",
+            "cave_creeper",
+            "broodmother",
+            "murloc_raider",
+            "siren",
+            "crab",
+            "matriarch",
+            "myrmidon",
         ] {
             for v in [Voice::Attack, Voice::Wound, Voice::Death] {
                 paths.push(monster_sound(id, v, 1));

@@ -96,7 +96,8 @@ fn start(
     ex.dirty = true;
     let pack = monsters_of(&p.pack);
     let seed = run.0.rng.next_u64();
-    let mut battle = Battle::new(run.0.party.clone(), &pack, run.0.light, Rng::new(seed));
+    let mut battle = Battle::new(run.0.party.clone(), &pack, run.0.light, Rng::new(seed))
+        .with_level(run.0.level());
     // A curio's blessing carries into the first fight after it.
     for (stat, amt) in std::mem::take(&mut run.0.buffs) {
         for &h in &battle.heroes.clone() {
@@ -106,6 +107,29 @@ fn start(
             });
         }
     }
+    // Surprise: a bright torch catches the enemy unready; darkness lets them catch the party.
+    let mut surprise_line = None;
+    if !p.boss {
+        let roll = run.0.rng.range(1, 100);
+        if run.0.light >= 75 && roll <= 15 {
+            for &m in &battle.monsters.clone() {
+                battle.units[m].statuses.push(crate::rules::combat::Status {
+                    kind: StatusKind::Stun,
+                    turns: 2,
+                });
+            }
+            surprise_line = Some("The party strikes first. The enemy is caught unready!");
+        } else if run.0.light <= 25 && roll <= 30 {
+            let mut order = battle.heroes.clone();
+            battle.rng.shuffle(&mut order);
+            battle.heroes = order;
+            for h in battle.heroes.clone() {
+                battle.stress(h, 5);
+            }
+            battle.events.clear();
+            surprise_line = Some("Surprised in the dark! The party scrambles out of formation.");
+        }
+    }
     let mut actors = HashMap::new();
     for &uid in &battle.heroes {
         let UnitKind::Hero(h) = &battle.units[uid].kind else {
@@ -113,6 +137,7 @@ fn start(
         };
         if let Some((e, mut a)) = heroes.iter_mut().find(|(_, a)| a.hero == Some(h.id)) {
             a.unit = Some(uid);
+            a.home = stage::slot(Side::Heroes, battle.rank_of(uid) as f32);
             actors.insert(uid, e);
         }
     }
@@ -157,6 +182,9 @@ fn start(
             ])
             .expect("lines")
     });
+    if let Some(line) = surprise_line {
+        narrator.say(line);
+    }
     walk.zoom_target = 0.0;
     for &uid in &battle.heroes {
         if let Some(e) = actors.get(&uid) {
@@ -178,10 +206,11 @@ fn start(
         last: None,
         beat: 0,
     });
+    let region = run.0.dungeon.quest.region;
     *music = if p.boss {
-        crate::audio::Music::Boss
+        crate::audio::Music::Lair(region)
     } else {
-        crate::audio::Music::Battle
+        crate::audio::Music::Fight(region)
     };
 }
 
@@ -459,7 +488,7 @@ fn run(
         return;
     }
     if let Some(o) = bv.over {
-        *music = crate::audio::Music::Crypt;
+        *music = crate::audio::Music::Explore(runres.0.dungeon.quest.region);
         sfx.play(crate::audio::COIN, -6.0);
         finish(
             &mut commands,
@@ -1154,10 +1183,15 @@ fn hud(
                             Act::Choose(Choice::Skill(i)),
                             ok,
                             sel,
-                            Some(super::hamlet::skill_tooltip(s)),
+                            Some(super::hamlet::skill_tooltip_ranked(s, h.rank(s.id))),
                         );
                         cell.spawn(kit.text(
-                            format!("{} {}", i + 1, s.name),
+                            format!(
+                                "{} {} {}",
+                                i + 1,
+                                s.name,
+                                ["", "I", "II", "III", "IV", "V"][usize::from(h.rank(s.id).min(5))]
+                            ),
                             12.0,
                             if ok { BONE } else { DIM },
                         ));

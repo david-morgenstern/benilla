@@ -37,6 +37,11 @@ pub enum Stat {
     StressTaken,
     /// Healing received, in percent.
     HealRecv,
+    /// Healing done, in percent.
+    HealOut,
+    /// Maximum hit points, in percent.
+    MaxHp,
+    DeathBlowRes,
 }
 
 impl Stat {
@@ -55,6 +60,9 @@ impl Stat {
             Stat::MoveRes => "Move Res",
             Stat::StressTaken => "Stress",
             Stat::HealRecv => "Heal Recv",
+            Stat::HealOut => "Healing",
+            Stat::MaxHp => "Max HP",
+            Stat::DeathBlowRes => "Deathblow Res",
         }
     }
 }
@@ -210,9 +218,10 @@ pub mod anim {
     pub const ATTACK_BOW: u16 = 44;
     pub const SPECIAL_1H: u16 = 57;
     pub const SPELL_PRECAST: u16 = 51;
+    pub const SIT_GROUND: u16 = 97;
 }
 
-const fn skill(id: &'static str, name: &'static str, icon: &'static str) -> SkillDef {
+pub(crate) const fn skill(id: &'static str, name: &'static str, icon: &'static str) -> SkillDef {
     SkillDef {
         id,
         name,
@@ -299,7 +308,7 @@ pub struct ClassDef {
     pub prefers: u8,
 }
 
-const fn res(stun: i32, blight: i32, bleed: i32, debuff: i32, moves: i32) -> Resists {
+pub(crate) const fn res(stun: i32, blight: i32, bleed: i32, debuff: i32, moves: i32) -> Resists {
     Resists {
         stun,
         blight,
@@ -310,7 +319,7 @@ const fn res(stun: i32, blight: i32, bleed: i32, debuff: i32, moves: i32) -> Res
     }
 }
 
-const fn stats(
+pub(crate) const fn stats(
     max_hp: i32,
     dodge: i32,
     prot: i32,
@@ -1013,10 +1022,13 @@ impl MonsterDef {
 }
 
 pub fn monster(id: &str) -> Option<&'static MonsterDef> {
-    MONSTERS.iter().find(|m| m.id == id)
+    MONSTERS
+        .iter()
+        .chain(super::regions::MONSTERS.iter())
+        .find(|m| m.id == id)
 }
 
-const fn mres(stun: i32, blight: i32, bleed: i32, debuff: i32, moves: i32) -> Resists {
+pub(crate) const fn mres(stun: i32, blight: i32, bleed: i32, debuff: i32, moves: i32) -> Resists {
     Resists {
         stun,
         blight,
@@ -1027,7 +1039,7 @@ const fn mres(stun: i32, blight: i32, bleed: i32, debuff: i32, moves: i32) -> Re
     }
 }
 
-const fn mskill(id: &'static str, name: &'static str) -> SkillDef {
+pub(crate) const fn mskill(id: &'static str, name: &'static str) -> SkillDef {
     skill(id, name, "")
 }
 

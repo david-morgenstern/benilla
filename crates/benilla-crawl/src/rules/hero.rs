@@ -294,6 +294,18 @@ pub struct Hero {
     /// Busy recovering in town for the coming week.
     #[serde(default)]
     pub resting: bool,
+    /// Two trinket slots, by trinket id.
+    #[serde(default)]
+    pub trinkets: [Option<String>; 2],
+    /// Chosen talent ids, one per opened tier.
+    #[serde(default)]
+    pub talents: Vec<String>,
+    /// Skill ranks above I, by skill id.
+    #[serde(default)]
+    pub skill_ranks: Vec<(String, u8)>,
+    /// Camp buffs, spent at the end of the next battle.
+    #[serde(default)]
+    pub camp_buffs: Vec<(Stat, i32)>,
 }
 
 impl Hero {
@@ -328,7 +340,15 @@ impl Hero {
             kills: 0,
             expeditions: 0,
             resting: false,
+            trinkets: [None, None],
+            talents: Vec::new(),
+            skill_ranks: Vec::new(),
+            camp_buffs: Vec::new(),
         };
+        // Recruits arrive with four of their six skills, chosen at random.
+        let mut ids: Vec<&str> = def.skills.iter().map(|s| s.id).collect();
+        rng.shuffle(&mut ids);
+        hero.skills = ids.into_iter().take(4).map(str::to_owned).collect();
         hero.hp = hero.max_hp();
         hero
     }
@@ -369,7 +389,78 @@ impl Hero {
         if let Some(v) = self.virtue {
             out.extend_from_slice(v.mods());
         }
+        for t in self.trinkets.iter().flatten() {
+            if let Some(def) = super::items::trinket(t) {
+                out.extend_from_slice(def.mods);
+            }
+        }
+        for t in &self.talents {
+            if let Some(def) = super::talents::talent(self.class, t) {
+                out.extend_from_slice(def.mods);
+            }
+        }
+        out.extend_from_slice(&self.camp_buffs);
         out
+    }
+
+    /// A skill's rank, I to V.
+    pub fn rank(&self, skill: &str) -> u8 {
+        self.skill_ranks
+            .iter()
+            .find(|(s, _)| s == skill)
+            .map_or(1, |(_, r)| *r)
+    }
+
+    pub fn set_rank(&mut self, skill: &str, rank: u8) {
+        match self.skill_ranks.iter_mut().find(|(s, _)| s == skill) {
+            Some((_, r)) => *r = rank,
+            None => self.skill_ranks.push((skill.to_owned(), rank)),
+        }
+    }
+
+    /// Talent tiers opened by resolve and not yet chosen.
+    pub fn open_talent_tiers(&self) -> Vec<usize> {
+        let tree = super::talents::tree(self.class);
+        (0..3)
+            .filter(|&t| self.level >= super::talents::TIER_LEVELS[t])
+            .filter(|&t| {
+                !tree[t]
+                    .iter()
+                    .any(|d| self.talents.iter().any(|x| x == d.id))
+            })
+            .collect()
+    }
+
+    /// Learn a talent if its tier is open.
+    pub fn learn_talent(&mut self, id: &str) -> bool {
+        let tree = super::talents::tree(self.class);
+        let Some(tier) = (0..3).find(|&t| tree[t].iter().any(|d| d.id == id)) else {
+            return false;
+        };
+        if !self.open_talent_tiers().contains(&tier) {
+            return false;
+        }
+        self.talents.push(id.to_owned());
+        true
+    }
+
+    /// Wear a trinket in a slot, returning what was there. Class-bound trinkets refuse others.
+    pub fn equip(
+        &mut self,
+        slot: usize,
+        id: Option<String>,
+    ) -> Result<Option<String>, &'static str> {
+        if slot > 1 {
+            return Err("no such slot");
+        }
+        if let Some(t) = id.as_deref().and_then(super::items::trinket) {
+            if t.class.is_some_and(|c| c != self.class) {
+                return Err("another class's trinket");
+            }
+        }
+        let old = std::mem::replace(&mut self.trinkets[slot], id);
+        self.hp = self.hp.min(self.max_hp());
+        Ok(old)
     }
 
     pub fn mod_total(&self, stat: Stat) -> i32 {
@@ -383,7 +474,8 @@ impl Hero {
     pub fn max_hp(&self) -> i32 {
         let base = self.class.def().base.max_hp;
         // Each armour tier adds a sixth of the base; each resolve level a little more.
-        base + (base * i32::from(self.armor - 1)) / 6 + i32::from(self.level)
+        let raw = base + (base * i32::from(self.armor - 1)) / 6 + i32::from(self.level);
+        (raw * (100 + self.mod_total(Stat::MaxHp)) / 100).max(1)
     }
 
     /// The base stats with level, gear and quirks folded in; battle buffs come on top.
@@ -407,7 +499,7 @@ impl Hero {
                 bleed: r.bleed + lvl * 5,
                 debuff: r.debuff + lvl * 5,
                 moves: r.moves + lvl * 5,
-                death_blow: r.death_blow + lvl * 2,
+                death_blow: r.death_blow + lvl * 2 + self.mod_total(Stat::DeathBlowRes),
             },
         }
     }
@@ -506,6 +598,12 @@ mod tests {
     fn toggling_keeps_at_most_four() {
         let mut rng = Rng::new(1);
         let mut h = Hero::new(1, HeroClass::Rogue, "Test".into(), &mut rng);
+        h.skills = vec![
+            "sinister_strike".into(),
+            "rupture".into(),
+            "ambush".into(),
+            "gouge".into(),
+        ];
         h.toggle_skill("throw");
         assert_eq!(h.skills.len(), 4, "a fifth is refused");
         h.toggle_skill("rupture");

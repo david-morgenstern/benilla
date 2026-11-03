@@ -8,6 +8,7 @@ use bevy::prelude::*;
 
 use super::{Run, Scoped, Screen};
 use crate::rules::combat::Side;
+use crate::rules::regions::Region;
 use crate::wow::{ModelSource, PlayAnim, Rig, WowModel};
 
 /// The span of one repeat of the corridor's decoration; the scroll wraps on it.
@@ -190,6 +191,8 @@ fn build_scenery(
     mut mats: ResMut<Assets<StandardMaterial>>,
     mut walk: ResMut<Walk>,
     mut images: ResMut<Assets<Image>>,
+    run: Option<Res<Run>>,
+    mut fogs: Query<&mut DistanceFog, With<StageCamera>>,
 ) {
     *walk = Walk::default();
     spawn_vignette(&mut commands, &mut images);
@@ -202,31 +205,18 @@ fn build_scenery(
             ..default()
         })
     };
-    let floor_m = mat(
-        &mut mats,
-        "Dungeons\\Textures\\floor\\JACRYPTFLOOR01",
-        Color::srgb(0.75, 0.72, 0.7),
+    let theme = theme(
+        run.as_ref()
+            .map_or(Region::Crypts, |r| r.0.dungeon.quest.region),
     );
-    let wall_m = mat(
-        &mut mats,
-        "Dungeons\\Textures\\brick\\JACRYPTBRICK01",
-        Color::srgb(0.7, 0.66, 0.66),
-    );
-    let trim_m = mat(
-        &mut mats,
-        "Dungeons\\Textures\\trim\\JACRYPTBRICK02",
-        Color::srgb(0.7, 0.66, 0.62),
-    );
-    let pillar_m = mat(
-        &mut mats,
-        "Dungeons\\Textures\\roof\\JACRYPTPILLAR",
-        Color::srgb(0.8, 0.76, 0.72),
-    );
-    let ceiling_m = mat(
-        &mut mats,
-        "Dungeons\\Textures\\roof\\JACRYPTCEILING",
-        Color::srgb(0.5, 0.48, 0.48),
-    );
+    let floor_m = mat(&mut mats, theme.floor, theme.tint);
+    let wall_m = mat(&mut mats, theme.wall, theme.tint);
+    let trim_m = mat(&mut mats, theme.trim, theme.tint);
+    let pillar_m = mat(&mut mats, theme.pillar, theme.tint);
+    let ceiling_m = mat(&mut mats, theme.ceiling, Color::srgb(0.5, 0.48, 0.48));
+    if let Ok(mut fog) = fogs.single_mut() {
+        fog.color = theme.fog;
+    }
 
     let length = REPEAT * 8.0;
     let root = commands
@@ -250,8 +240,16 @@ fn build_scenery(
             Transform::from_xyz(0.0, 0.0, (FLOOR_FRONT + WALL_Z) / 2.0)
                 .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
         ));
-        p.spawn((Mesh3d(wall), MeshMaterial3d(wall_m), Transform::from_xyz(0.0, 3.5, WALL_Z)));
-        p.spawn((Mesh3d(trim), MeshMaterial3d(trim_m), Transform::from_xyz(0.0, 0.35, WALL_Z + 0.02)));
+        p.spawn((
+            Mesh3d(wall),
+            MeshMaterial3d(wall_m),
+            Transform::from_xyz(0.0, 3.5, WALL_Z),
+        ));
+        p.spawn((
+            Mesh3d(trim),
+            MeshMaterial3d(trim_m),
+            Transform::from_xyz(0.0, 0.35, WALL_Z + 0.02),
+        ));
         p.spawn((
             Mesh3d(ceiling),
             MeshMaterial3d(ceiling_m),
@@ -263,31 +261,38 @@ fn build_scenery(
         let mut i = 0usize;
         while x < length / 2.0 {
             // Pillars every 8 units.
-            p.spawn((Mesh3d(pillar.clone()), MeshMaterial3d(pillar_m.clone()), Transform::from_xyz(x, 3.5, WALL_Z + 0.4), bevy::light::NotShadowCaster));
+            p.spawn((
+                Mesh3d(pillar.clone()),
+                MeshMaterial3d(pillar_m.clone()),
+                Transform::from_xyz(x, 3.5, WALL_Z + 0.4),
+                bevy::light::NotShadowCaster,
+            ));
             // Between pillars, a rotating cast of crypt furnishings.
             let mid = x + 4.0;
-            let prop = match i % 3 {
-                0 => ("World\\Lordaeron\\Scholomance\\PassiveDoodads\\Candles\\Scholme_Candelabra.m2", 2.2, -0.2),
-                1 => ("World\\Generic\\PassiveDoodads\\Skeletons\\ChainedSkeleton01.m2", 1.9, 1.2),
-                _ => ("World\\Lordaeron\\Scholomance\\PassiveDoodads\\Tapestries\\Scholme_tapestrySkull.m2", 3.0, 1.8),
-            };
+            let prop = theme.props[i % theme.props.len()];
             p.spawn((
                 Transform::from_xyz(mid, prop.2, WALL_Z + 0.35),
                 Visibility::default(),
-                WowModel { source: ModelSource::Prop(prop.0.to_owned(), None), height: Some(prop.1) },
+                WowModel {
+                    source: ModelSource::Prop(prop.0.to_owned(), None),
+                    height: Some(prop.1),
+                },
                 NoShadows,
             ));
             if i.is_multiple_of(3) {
                 p.spawn((
                     PointLight {
-                        color: Color::srgb(1.0, 0.62, 0.3),
+                        color: theme.sconce,
                         intensity: 25_000.0,
                         range: 7.0,
                         shadows_enabled: false,
                         ..default()
                     },
                     Transform::from_xyz(mid, 2.4, WALL_Z + 0.9),
-                    Sconce { base: 25_000.0, phase: i as f32 * 1.7 },
+                    Sconce {
+                        base: 25_000.0,
+                        phase: i as f32 * 1.7,
+                    },
                 ));
             }
             if i % 4 == 2 {
@@ -295,10 +300,7 @@ fn build_scenery(
                     Transform::from_xyz(mid + 2.0, 0.0, WALL_Z + 0.8),
                     Visibility::default(),
                     WowModel {
-                        source: ModelSource::Prop(
-                            "World\\Azeroth\\TheBlastedlands\\PassiveDoodads\\Bones\\BlastedLandsBonePile02.m2".into(),
-                            None,
-                        ),
+                        source: ModelSource::Prop(theme.clutter.into(), None),
                         height: Some(0.6),
                     },
                 ));
@@ -727,4 +729,72 @@ pub fn spawn_vignette(commands: &mut Commands, images: &mut Assets<Image>) {
         Vignette,
         Scoped(Screen::Dungeon),
     ));
+}
+
+/// How a region's halls are dressed.
+struct Theme {
+    floor: &'static str,
+    wall: &'static str,
+    trim: &'static str,
+    pillar: &'static str,
+    ceiling: &'static str,
+    tint: Color,
+    /// Wall furnishings between pillars: (model, height, height above the floor).
+    props: &'static [(&'static str, f32, f32)],
+    clutter: &'static str,
+    sconce: Color,
+    fog: Color,
+}
+
+fn theme(region: Region) -> Theme {
+    match region {
+        Region::Crypts => Theme {
+            floor: "Dungeons\\Textures\\floor\\JACRYPTFLOOR01",
+            wall: "Dungeons\\Textures\\brick\\JACRYPTBRICK01",
+            trim: "Dungeons\\Textures\\trim\\JACRYPTBRICK02",
+            pillar: "Dungeons\\Textures\\roof\\JACRYPTPILLAR",
+            ceiling: "Dungeons\\Textures\\roof\\JACRYPTCEILING",
+            tint: Color::srgb(0.72, 0.68, 0.66),
+            props: &[
+                ("World\\Lordaeron\\Scholomance\\PassiveDoodads\\Candles\\Scholme_Candelabra.m2", 2.2, -0.2),
+                ("World\\Generic\\PassiveDoodads\\Skeletons\\ChainedSkeleton01.m2", 1.9, 1.2),
+                ("World\\Lordaeron\\Scholomance\\PassiveDoodads\\Tapestries\\Scholme_tapestrySkull.m2", 3.0, 1.8),
+            ],
+            clutter: "World\\Azeroth\\TheBlastedlands\\PassiveDoodads\\Bones\\BlastedLandsBonePile02.m2",
+            sconce: Color::srgb(1.0, 0.62, 0.3),
+            fog: Color::srgb(0.01, 0.008, 0.012),
+        },
+        Region::Warrens => Theme {
+            floor: "Dungeons\\Textures\\Deadmine\\STU_MIDLEVELFLOOR_01",
+            wall: "Dungeons\\Textures\\Deadmine\\STU_LUMBERWALL_01",
+            trim: "Dungeons\\Textures\\Deadmine\\STU_DEADMINELOG",
+            pillar: "Dungeons\\Textures\\Deadmine\\STU_MINEBEAM_01",
+            ceiling: "Dungeons\\Textures\\Deadmine\\STU_CAVECEILING_02",
+            tint: Color::srgb(0.75, 0.68, 0.6),
+            props: &[
+                ("World\\Dungeon\\Goldmine\\PassiveDoodads\\CaveLanterns\\CaveMineLantern01.m2", 1.0, 2.2),
+                ("World\\Azeroth\\Elwynn\\PassiveDoodads\\MineCart\\ElwynnMineCart.m2", 1.3, 0.0),
+                ("World\\Dungeon\\Goldmine\\PassiveDoodads\\CaveMineKobolds\\CaveMineKobold02.m2", 1.4, 0.0),
+            ],
+            clutter: "World\\Azeroth\\Karazahn\\PassiveDoodads\\Rubble\\KarazahnRockRubble01.m2",
+            sconce: Color::srgb(1.0, 0.7, 0.35),
+            fog: Color::srgb(0.02, 0.012, 0.006),
+        },
+        Region::Grotto => Theme {
+            floor: "Dungeons\\Textures\\BlackFathom\\BM_BF_INTFLOOR01",
+            wall: "Dungeons\\Textures\\BlackFathom\\BM_BF_STONEWALL01",
+            trim: "Dungeons\\Textures\\BlackFathom\\BM_BF_INTTRIMS02",
+            pillar: "Dungeons\\Textures\\BlackFathom\\BM_BF_COLUMNS01",
+            ceiling: "Dungeons\\Textures\\BlackFathom\\BM_BF_CAVECEILING01",
+            tint: Color::srgb(0.6, 0.72, 0.72),
+            props: &[
+                ("World\\Azeroth\\Duskwood\\PassiveDoodads\\Detail\\DuskwoodSeaWeed01\\DuskwoodSeaWeed01.m2", 1.6, 0.0),
+                ("World\\Azeroth\\Westfall\\PassiveDoodads\\SunkenAnchor\\SunkenAnchor.m2", 2.0, 0.0),
+                ("World\\Azeroth\\Stranglethorn\\PassiveDoodads\\SerpentStatue02\\SerpentStatue02.m2", 2.4, 0.0),
+            ],
+            clutter: "World\\Azeroth\\Elwynn\\PassiveDoodads\\Detail\\ElwynnSeaWeed01\\ElwynnSeaWeed01.m2",
+            sconce: Color::srgb(0.35, 0.85, 0.8),
+            fog: Color::srgb(0.005, 0.015, 0.02),
+        },
+    }
 }
