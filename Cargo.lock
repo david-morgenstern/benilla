@@ -576,6 +576,19 @@ name = "benilla-bytes"
 version = "0.3.0"
 
 [[package]]
+name = "benilla-crawl"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "benilla-assets",
+ "benilla-blp",
+ "benilla-formats",
+ "bevy",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "benilla-dbc"
 version = "0.3.0"
 dependencies = [
