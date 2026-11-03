@@ -49,9 +49,9 @@ ranks against certain ranks. Heroes at zero HP stand at Death's Door; stress at 
 
 | Variable | Effect |
 | --- | --- |
-| `CRAWL_AUTOSTART=hamlet\|map\|dungeon\|battle\|boss\|warrens\|grotto` | Skip the title with a seeded campaign (never saved) |
+| `CRAWL_AUTOSTART=hamlet\|map\|dungeon\|camp\|battle\|boss\|warrens\|grotto` | Skip the title with a seeded campaign (never saved) |
 | `CRAWL_AUTOPLAY=1` | Play unattended: town, map, exploration and battle |
-| `CRAWL_RICH=1` | With autostart: gold, heirlooms, trinkets and some resolve |
+| `CRAWL_RICH=1` | With autostart: gold, heirlooms, worn trinkets and some resolve |
 | `CRAWL_MUTE=1` | No audio |
 | `CRAWL_SHOT=<png>`, `CRAWL_SHOT_AT=<s>[,<s>…]` | Screenshots at those times, then exit |
 

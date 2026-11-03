@@ -29,9 +29,9 @@ struct Scroller;
 pub struct PartyTorch;
 
 #[derive(Component)]
-struct Sconce {
-    base: f32,
-    phase: f32,
+pub struct Sconce {
+    pub base: f32,
+    pub phase: f32,
 }
 
 /// How far the party has walked, in stage units; the scenery scrolls by it.
@@ -232,7 +232,17 @@ fn build_scenery(
     let wall = meshes.add(quad(length, 7.0, length / 3.5, 2.0));
     let trim = meshes.add(quad(length, 0.7, length / 2.0, 1.0));
     let ceiling = meshes.add(quad(length, depth, length / 4.0, depth / 4.0));
-    let pillar = meshes.add(Cuboid::new(0.9, 7.0, 0.9));
+    // A cuboid maps the whole texture onto each face; repeat it up the pillar's height instead
+    // of smearing it into a flat brown beam.
+    let mut pillar = Cuboid::new(0.9, 7.0, 0.9).mesh().build();
+    if let Some(bevy::mesh::VertexAttributeValues::Float32x2(uvs)) =
+        pillar.attribute_mut(Mesh::ATTRIBUTE_UV_0)
+    {
+        for uv in uvs.iter_mut() {
+            uv[1] *= 5.0;
+        }
+    }
+    let pillar = meshes.add(pillar);
     commands.entity(root).with_children(|p| {
         p.spawn((
             Mesh3d(floor),
@@ -348,7 +358,7 @@ pub fn slot(side: Side, rank: f32) -> Vec3 {
         Side::Heroes => -1.0,
         Side::Monsters => 1.0,
     };
-    let x = sign * (1.05 + (rank - 1.0) * 1.3);
+    let x = sign * (1.0 + (rank - 1.0) * 1.2);
     let z = if (rank.round() as i32) % 2 == 0 {
         -0.35
     } else {
@@ -773,7 +783,9 @@ fn theme(region: Region) -> Theme {
             tint: Color::srgb(0.75, 0.68, 0.6),
             props: &[
                 ("World\\Dungeon\\Goldmine\\PassiveDoodads\\CaveLanterns\\CaveMineLantern01.m2", 1.0, 2.2),
-                ("World\\Azeroth\\Elwynn\\PassiveDoodads\\MineCart\\ElwynnMineCart.m2", 1.3, 0.0),
+                // Not the Elwynn mine cart: it is authored tipped over with its spill, and hangs
+                // tilted across the stage at this scale.
+                ("World\\Generic\\PassiveDoodads\\Barrel\\Barrel01.m2", 1.1, 0.0),
                 ("World\\Dungeon\\Goldmine\\PassiveDoodads\\CaveMineKobolds\\CaveMineKobold02.m2", 1.4, 0.0),
             ],
             clutter: "World\\Azeroth\\Karazahn\\PassiveDoodads\\Rubble\\KarazahnRockRubble01.m2",

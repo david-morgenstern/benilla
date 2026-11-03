@@ -87,7 +87,7 @@ pub static CAMP_SKILLS: &[CampSkill] = &[
     cs(
         "pep_talk",
         "Pep Talk",
-        "Ability_Warrior_RallyingCry",
+        "Ability_Warrior_BattleShout",
         "+10% stress resist for an ally.",
         2,
         Ally,
@@ -127,7 +127,7 @@ pub static CAMP_SKILLS: &[CampSkill] = &[
     cs(
         "p_vigil",
         "Holy Vigil",
-        "Spell_Holy_HolyGuidance",
+        "Spell_Holy_SealOfWisdom",
         "Prayer through the night: -15 stress for the party.",
         4,
         Party,
@@ -157,7 +157,7 @@ pub static CAMP_SKILLS: &[CampSkill] = &[
     cs(
         "r_gamble",
         "Dice by Torchlight",
-        "INV_Misc_Dice_02",
+        "INV_Misc_Coin_02",
         "A game of chance: -20 stress for self and an ally.",
         2,
         Ally,

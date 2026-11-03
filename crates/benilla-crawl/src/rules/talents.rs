@@ -194,7 +194,7 @@ static ROGUE: [[TalentDef; 2]; 3] = [
         tal(
             "r_cheat_death",
             "Cheat Death",
-            "Ability_Rogue_CheatDeath",
+            "Ability_Vanish",
             "+20% death blow resist, +5 dodge.",
             &[(Stat::DeathBlowRes, 20), (Stat::Dodge, 5)],
         ),

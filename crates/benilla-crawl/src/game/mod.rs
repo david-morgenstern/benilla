@@ -132,7 +132,7 @@ pub fn load_save() -> Option<Campaign> {
     Campaign::from_json(&s).ok()
 }
 
-/// `CRAWL_AUTOSTART=hamlet|map|dungeon|battle|boss|warrens|grotto` jumps past the title with a
+/// `CRAWL_AUTOSTART=hamlet|map|dungeon|camp|battle|boss|warrens|grotto` jumps past the title with a
 /// seeded campaign, for screenshots and smoke runs; it never touches the save.
 fn autostart(mut commands: Commands, mut next: ResMut<NextState<Screen>>, mut done: Local<bool>) {
     use crate::rules::regions::{Length, QuestKind, QuestOffer, Region};
@@ -154,6 +154,14 @@ fn autostart(mut commands: Commands, mut next: ResMut<NextState<Screen>>, mut do
         );
         for h in &mut c.roster {
             h.grant_xp(4);
+        }
+        // Wear what fits, so the dungeon HUD has trinkets to show.
+        let ids: Vec<u32> = c.roster.iter().map(|h| h.id).collect();
+        for id in ids {
+            for slot in 0..2 {
+                // A refused trinket (class-locked, a duplicate) leaves the stash as it was.
+                let _ = (0..c.trinkets.len()).any(|i| c.equip_trinket(id, slot, i).is_ok());
+            }
         }
     }
     match mode.as_str() {
@@ -195,7 +203,7 @@ fn autostart(mut commands: Commands, mut next: ResMut<NextState<Screen>>, mut do
             }
             commands.insert_resource(ActiveOffer(Some(offer)));
             commands.insert_resource(Game(c));
-            if mode != "dungeon" {
+            if mode != "dungeon" && mode != "camp" {
                 let pack: &[&str] = if boss {
                     region.boss_pack()
                 } else {

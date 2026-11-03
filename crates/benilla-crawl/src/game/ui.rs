@@ -363,7 +363,7 @@ fn spawn_overlay(mut commands: Commands, fonts: Res<Fonts>) {
                     color: Color::BLACK,
                 },
                 Node {
-                    max_width: Val::Px(1100.0),
+                    max_width: Val::Percent(56.0),
                     ..default()
                 },
                 NarratorText,
@@ -559,4 +559,54 @@ pub fn float_text(
             life: 1.6,
         },
     ));
+}
+
+#[cfg(test)]
+mod tests {
+    /// Every icon the source names (`Spell_…`, `Ability_…`, `INV_…`, …) is in the install, so
+    /// none draws as the red question mark (skipped with no `WOW_DATA`).
+    #[test]
+    fn named_icons_exist() {
+        let Some(dir) = std::env::var_os("WOW_DATA") else {
+            eprintln!("skipped: no WOW_DATA");
+            return;
+        };
+        let mut chain = benilla_formats::open_chain(std::path::Path::new(&dir)).expect("chain");
+        let mut names = std::collections::BTreeSet::new();
+        let mut stack = vec![std::path::PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src"
+        ))];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).expect("src dir").flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    let text = std::fs::read_to_string(&p).expect("source");
+                    for lit in text.split('"').skip(1).step_by(2) {
+                        let prefixed = ["Spell_", "Ability_", "INV_", "Trade_", "Racial_", "Temp_"]
+                            .iter()
+                            .any(|pre| lit.starts_with(pre));
+                        if prefixed && lit.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                            names.insert(lit.to_owned());
+                        }
+                    }
+                }
+            }
+        }
+        assert!(names.len() > 50, "found only {} icon names", names.len());
+        let missing: Vec<&String> = names
+            .iter()
+            .filter(|n| {
+                chain
+                    .read_file(&format!(r"Interface\Icons\{n}.blp"))
+                    .is_err()
+            })
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "icons missing from the install: {missing:#?}"
+        );
+    }
 }

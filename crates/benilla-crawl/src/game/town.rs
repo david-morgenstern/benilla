@@ -88,6 +88,10 @@ const HALL: &str =
     "World\\wmo\\Azeroth\\Buildings\\Duskwood_HumanTwoStory\\Duskwood_HumanTwoStory.wmo";
 const SMITH: &str = "World\\wmo\\Azeroth\\Buildings\\Duskwood_Blacksmith\\Duskwood_Blacksmith.wmo";
 const TOWER: &str = "World\\wmo\\Azeroth\\Buildings\\Duskwood_MageTower\\Duskwood_MageTower.wmo";
+/// The night sky at the horizon (also the fog, so distant hills melt into it) and overhead.
+const SKY_HORIZON: Color = Color::srgb(0.09, 0.12, 0.23);
+const SKY_ZENITH: Color = Color::srgb(0.008, 0.012, 0.045);
+
 const ESTATE: &str = "World\\wmo\\Azeroth\\Buildings\\RuinedCathedral\\RuinedCathedral.wmo";
 
 fn build(
@@ -99,7 +103,7 @@ fn build(
 ) {
     if let Ok((mut t, mut fog)) = cam.single_mut() {
         *t = Transform::from_xyz(0.0, 26.0, 62.0).looking_at(Vec3::new(0.0, 6.0, -13.8), Vec3::Y);
-        fog.color = Color::srgb(0.07, 0.09, 0.17);
+        fog.color = SKY_HORIZON;
         fog.falloff = FogFalloff::Linear {
             start: 160.0,
             end: 520.0,
@@ -149,7 +153,51 @@ fn build(
         scoped,
     ));
 
-    // The moon, cold and low.
+    // The night sky: a gradient dome from a hazy blue horizon to a deep zenith, and a low moon.
+    // The fog only tints geometry, so without a dome the sky is the clear colour (black).
+    commands.insert_resource(ClearColor(SKY_HORIZON));
+    let mut dome = Sphere::new(650.0).mesh().uv(48, 24);
+    if let Some(bevy::mesh::VertexAttributeValues::Float32x3(pos)) =
+        dome.attribute(Mesh::ATTRIBUTE_POSITION).cloned()
+    {
+        let (h, z) = (SKY_HORIZON.to_linear(), SKY_ZENITH.to_linear());
+        let colors: Vec<[f32; 4]> = pos
+            .iter()
+            .map(|p| {
+                let k = (p[1] / 650.0).clamp(0.0, 1.0).powf(0.45);
+                h.mix(&z, k).to_f32_array()
+            })
+            .collect();
+        dome.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+    }
+    commands.spawn((
+        Mesh3d(meshes.add(dome)),
+        MeshMaterial3d(mats.add(StandardMaterial {
+            base_color: Color::WHITE,
+            unlit: true,
+            fog_enabled: false,
+            cull_mode: None,
+            ..default()
+        })),
+        Transform::from_xyz(0.0, 0.0, 150.0),
+        bevy::camera::visibility::NoFrustumCulling,
+        bevy::light::NotShadowCaster,
+        scoped,
+    ));
+    commands.spawn((
+        Mesh3d(meshes.add(Sphere::new(14.0).mesh().uv(32, 16))),
+        MeshMaterial3d(mats.add(StandardMaterial {
+            base_color: Color::srgb(0.86, 0.9, 1.0),
+            unlit: true,
+            fog_enabled: false,
+            ..default()
+        })),
+        Transform::from_xyz(125.0, 52.0, -400.0),
+        bevy::light::NotShadowCaster,
+        scoped,
+    ));
+
+    // The moon's light, cold and low.
     commands.spawn((
         DirectionalLight {
             color: Color::srgb(0.55, 0.62, 0.95),

@@ -60,6 +60,18 @@ enum Act {
 #[derive(Component)]
 struct HudRoot;
 
+/// A camp flame's licking phase.
+#[derive(Component)]
+struct Flame(f32);
+
+fn lick_flames(time: Res<Time>, mut q: Query<(&mut Transform, &Flame)>) {
+    let t = time.elapsed_secs();
+    for (mut tr, f) in &mut q {
+        let k = 1.0 + 0.18 * (t * 9.0 + f.0).sin() * (t * 3.7 + f.0).cos();
+        tr.scale = Vec3::new(1.0 / k.sqrt(), k, 1.0 / k.sqrt());
+    }
+}
+
 /// Orders queued by `CRAWL_AUTOPLAY`, carried out as if clicked.
 #[derive(Resource, Default)]
 struct AutoQueue(Vec<Act>, f32);
@@ -73,6 +85,7 @@ impl Plugin for ExplorePlugin {
             .add_systems(
                 Update,
                 (
+                    lick_flames,
                     autoplay,
                     act,
                     plate_clicks,
@@ -93,6 +106,7 @@ fn enter(
     data: Res<WowData>,
     mut narrator: ResMut<Narrator>,
     mut music: ResMut<crate::audio::Music>,
+    mut auto: ResMut<AutoQueue>,
 ) {
     narrator.clear();
     *music = crate::audio::Music::Explore(run.0.dungeon.quest.region);
@@ -104,6 +118,10 @@ fn enter(
     narrator.say(run.0.dungeon.quest.label());
     for (i, h) in run.0.party.iter().enumerate() {
         spawn_hero(&mut commands, &data, h, i);
+    }
+    // `CRAWL_AUTOSTART=camp` makes camp at once, for looking at the camp.
+    if std::env::var("CRAWL_AUTOSTART").is_ok_and(|m| m == "camp") {
+        auto.0.push(Act::Camp);
     }
     commands.insert_resource(Explore {
         mode: Mode::Idle,
@@ -459,6 +477,8 @@ fn act(
     mut auto: ResMut<AutoQueue>,
     offer: Res<super::ActiveOffer>,
     mut sfx: ResMut<crate::audio::Sfx>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
 ) {
     let mut acts: Vec<Act> = q
         .iter()
@@ -555,16 +575,46 @@ fn act(
                     narrator.say("The party makes camp. The fire is small, and the dark is large.");
                     let e = commands
                         .spawn((
-                            Transform::from_xyz(-3.2, 0.0, 1.4),
+                            Transform::from_xyz(1.5, 0.0, 0.5),
                             Visibility::default(),
                             WowModel {
                                 source: ModelSource::Prop("World\\Azeroth\\Elwynn\\PassiveDoodads\\Campfire\\ElwynnCampfire.m2".into(), None),
                                 height: Some(0.8),
                             },
                             PointLight { color: Color::srgb(1.0, 0.55, 0.2), intensity: 400_000.0, range: 10.0, ..default() },
+                            stage::Sconce { base: 400_000.0, phase: 0.0 },
                             Scoped(Screen::Dungeon),
                         ))
                         .id();
+                    // The model's flames are particles, which the stage does not draw: a glowing
+                    // tongue of fire in their place, licked about by `lick_flames`.
+                    for (i, (r, h, color)) in [
+                        (0.2, 0.55, Color::srgba(1.0, 0.45, 0.1, 0.75)),
+                        (0.11, 0.38, Color::srgba(1.0, 0.85, 0.4, 0.9)),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        let flame = commands
+                            .spawn((
+                                Mesh3d(meshes.add(Cone {
+                                    radius: r,
+                                    height: h,
+                                })),
+                                MeshMaterial3d(mats.add(StandardMaterial {
+                                    base_color: color,
+                                    emissive: color.to_linear() * 6.0,
+                                    unlit: true,
+                                    alpha_mode: AlphaMode::Add,
+                                    ..default()
+                                })),
+                                Transform::from_xyz(0.0, 0.12 + h / 2.0, 0.0),
+                                Flame(i as f32 * 1.9),
+                                bevy::light::NotShadowCaster,
+                            ))
+                            .id();
+                        commands.entity(e).add_child(flame);
+                    }
                     ex.prop = Some(e);
                 }
             }

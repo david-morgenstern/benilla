@@ -198,8 +198,36 @@ impl Plugin for WowPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<BodyCache>().add_systems(
             Update,
-            (start_loads, build_models, build_wmos, drive_anims).chain(),
+            (start_loads, build_models, build_wmos, drive_anims, reskin).chain(),
         );
+    }
+}
+
+/// Frames a new skinned part waits before its skin is registered again.
+const RESKIN_FRAMES: u8 = 3;
+
+/// A skinned part whose skin is registered again once its joints have settled.
+///
+/// Bevy writes a skin's joint matrices when the mesh first becomes visible, falling back to the
+/// identity for a joint it cannot resolve yet, and afterwards rewrites a joint only when its
+/// `GlobalTransform` changes. A joint that never moves keeps the identity, and its vertices drop
+/// to the world origin while the rest follow the model: a beam stretched across the stage.
+/// Touching the `SkinnedMesh` makes Bevy drop the skin and build it afresh from settled joints.
+#[derive(Component)]
+struct Reskin(u8);
+
+fn reskin(
+    mut commands: Commands,
+    mut q: Query<(Entity, &mut Reskin, &mut SkinnedMesh, &mut Mesh3d)>,
+) {
+    for (e, mut r, mut skin, mut mesh) in &mut q {
+        if r.0 > 0 {
+            r.0 -= 1;
+            continue;
+        }
+        skin.set_changed();
+        mesh.set_changed();
+        commands.entity(e).remove::<Reskin>();
     }
 }
 
@@ -535,6 +563,18 @@ fn build_models(
             .map(|b| (b.bbox_max[2] - b.bbox_min[2]).abs())
             .filter(|h| *h > 0.05)
             .unwrap_or(2.0);
+        // A prop is sized by its height, but no longer than `PROP_ASPECT` heights: a low, long
+        // doodad (a coffin, rubble) sized by its height alone grows into a beam across the stage.
+        const PROP_ASPECT: f32 = 1.6;
+        let authored_h = match (&req.source, m.bounds.as_ref()) {
+            (ModelSource::Prop(..), Some(b)) => {
+                let w = (b.bbox_max[0] - b.bbox_min[0])
+                    .abs()
+                    .max((b.bbox_max[1] - b.bbox_min[1]).abs());
+                authored_h.max(w / PROP_ASPECT)
+            }
+            _ => authored_h,
+        };
         let scale = req.height.map_or(1.0, |h| h / authored_h);
 
         let root = commands
@@ -597,10 +637,13 @@ fn build_models(
                 bevy::camera::visibility::NoFrustumCulling,
             ));
             if skinned {
-                part.insert(SkinnedMesh {
-                    inverse_bindposes: m.inverse_bindposes.clone(),
-                    joints: joints.clone(),
-                });
+                part.insert((
+                    SkinnedMesh {
+                        inverse_bindposes: m.inverse_bindposes.clone(),
+                        joints: joints.clone(),
+                    },
+                    Reskin(RESKIN_FRAMES),
+                ));
             }
             let part = part.id();
             commands.entity(root).add_child(part);
@@ -658,10 +701,13 @@ fn build_models(
                     bevy::camera::visibility::NoFrustumCulling,
                 ));
                 if item_skinned {
-                    part.insert(SkinnedMesh {
-                        inverse_bindposes: item.inverse_bindposes.clone(),
-                        joints: item_joints.clone(),
-                    });
+                    part.insert((
+                        SkinnedMesh {
+                            inverse_bindposes: item.inverse_bindposes.clone(),
+                            joints: item_joints.clone(),
+                        },
+                        Reskin(RESKIN_FRAMES),
+                    ));
                 }
                 let part = part.id();
                 commands.entity(holder).add_child(part);
