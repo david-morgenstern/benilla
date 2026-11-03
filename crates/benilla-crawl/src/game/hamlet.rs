@@ -343,7 +343,7 @@ pub fn skill_tooltip(s: &SkillDef) -> String {
     skill_tip(s)
 }
 
-fn hero_summary(p: &mut ChildSpawnerCommands, kit: &mut Kit, h: &Hero) {
+fn hero_summary(p: &mut ChildSpawnerCommands, kit: &mut Kit, h: &Hero, portrait: Handle<Image>) {
     let st = h.stats();
     p.spawn(Node {
         column_gap: Val::Px(12.0),
@@ -351,7 +351,28 @@ fn hero_summary(p: &mut ChildSpawnerCommands, kit: &mut Kit, h: &Hero) {
         ..default()
     })
     .with_children(|r| {
-        class_icon(r, kit, h, 64.0);
+        r.spawn((
+            Node {
+                width: Val::Px(120.0),
+                height: Val::Px(120.0),
+                border: UiRect::all(Val::Px(3.0)),
+                flex_shrink: 0.0,
+                ..default()
+            },
+            BorderColor::all(GOLD),
+            BackgroundColor(Color::BLACK),
+        ))
+        .with_children(|f| {
+            f.spawn((
+                ImageNode::new(portrait),
+                Node {
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
+                    ..default()
+                },
+            ));
+        });
+        class_icon(r, kit, h, 48.0);
         r.spawn(Node {
             flex_direction: FlexDirection::Column,
             ..default()
@@ -420,6 +441,7 @@ fn rebuild_hamlet(
     mut ui_state: ResMut<HamletUi>,
     game: Res<Game>,
     old: Query<Entity, With<UiRoot>>,
+    mut portrait: ResMut<super::portrait::Portrait>,
 ) {
     if !ui_state.dirty {
         return;
@@ -432,6 +454,7 @@ fn rebuild_hamlet(
     {
         ui_state.selected = c.roster.first().map(|h| h.id);
     }
+    portrait.want = ui_state.selected;
     let root = root(
         &mut commands,
         &mut kit,
@@ -529,7 +552,7 @@ fn rebuild_hamlet(
                 })
                 .with_children(|mid| {
                     if let Some(h) = sel {
-                        hero_summary(mid, &mut kit, h);
+                        hero_summary(mid, &mut kit, h, portrait.image.clone());
                         mid.spawn(Node {
                             column_gap: Val::Px(8.0),
                             ..default()

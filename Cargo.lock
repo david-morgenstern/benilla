@@ -584,6 +584,8 @@ dependencies = [
  "benilla-blp",
  "benilla-formats",
  "bevy",
+ "cpal 0.17.3",
+ "kira",
  "serde",
  "serde_json",
 ]

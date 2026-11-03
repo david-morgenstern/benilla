@@ -1,6 +1,7 @@
 //! Darkened Deeps: a turn-based, stress-driven dungeon crawler that dresses itself in the player's
 //! own World of Warcraft 1.12.1 install.
 
+pub mod audio;
 pub mod game;
 pub mod rules;
 pub mod wow;
@@ -45,6 +46,7 @@ fn main() -> AppExit {
     app.insert_resource(data)
         .insert_resource(ClearColor(Color::BLACK))
         .add_plugins(WowPlugin)
+        .add_plugins(audio::AudioPlugin)
         .add_plugins(game::GamePlugin)
         .add_systems(Update, shoot);
     app.run()

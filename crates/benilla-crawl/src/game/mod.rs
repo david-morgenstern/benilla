@@ -64,6 +64,14 @@ impl Plugin for GamePlugin {
             Screen::Debrief,
         ] {
             app.add_systems(OnExit(s), despawn_scoped(s));
+            let track = match s {
+                Screen::Title => crate::audio::Music::Title,
+                Screen::Dungeon => crate::audio::Music::Crypt,
+                _ => crate::audio::Music::Hamlet,
+            };
+            app.add_systems(OnEnter(s), move |mut m: ResMut<crate::audio::Music>| {
+                *m = track;
+            });
         }
     }
 }
@@ -129,20 +137,23 @@ fn autostart(mut commands: Commands, mut next: ResMut<NextState<Screen>>, mut do
             commands.insert_resource(Game(c));
             next.set(Screen::Hamlet);
         }
-        "dungeon" | "battle" => {
+        "dungeon" | "battle" | "boss" => {
             let ids: Vec<u32> = c.roster.iter().map(|h| h.id).collect();
             let quest = crate::rules::dungeon::Quest::Explore(90);
             if let Some(run) = c.embark(&ids, crate::rules::town::default_pack(), quest) {
                 commands.insert_resource(Run(run));
             }
             commands.insert_resource(Game(c));
-            if mode == "battle" {
+            if mode != "dungeon" {
+                let boss = mode == "boss";
+                let pack: &[&str] = if boss {
+                    crate::rules::data::CRYPT_BOSS_PACK
+                } else {
+                    crate::rules::data::CRYPT_PACKS[1]
+                };
                 commands.insert_resource(battle::PendingBattle {
-                    pack: crate::rules::data::CRYPT_PACKS[1]
-                        .iter()
-                        .map(|s| (*s).to_owned())
-                        .collect(),
-                    boss: false,
+                    pack: pack.iter().map(|s| (*s).to_owned()).collect(),
+                    boss,
                 });
             }
             next.set(Screen::Dungeon);

@@ -45,6 +45,9 @@ pub struct BattleView {
     boss: bool,
     /// Floaters stacked on a unit since the last skill, to stagger them.
     stack: HashMap<UnitId, u32>,
+    /// The skill being played out, for its impact sounds.
+    last: Option<(UnitId, &'static crate::rules::data::SkillDef)>,
+    beat: usize,
 }
 
 #[derive(Component, Clone, Copy)]
@@ -83,6 +86,7 @@ fn start(
     mut narrator: ResMut<Narrator>,
     mut walk: ResMut<Walk>,
     ex: Option<ResMut<Explore>>,
+    mut music: ResMut<crate::audio::Music>,
 ) {
     let (Some(p), Some(mut run), Some(mut ex)) = (pending, run, ex) else {
         return;
@@ -171,7 +175,14 @@ fn start(
         over: None,
         boss: p.boss,
         stack: HashMap::new(),
+        last: None,
+        beat: 0,
     });
+    *music = if p.boss {
+        crate::audio::Music::Boss
+    } else {
+        crate::audio::Music::Battle
+    };
 }
 
 fn first_usable(b: &Battle, id: UnitId) -> Option<Choice> {
@@ -385,6 +396,8 @@ fn run(
     xforms: Query<&GlobalTransform>,
     ex: Option<ResMut<Explore>>,
     runres: Option<ResMut<Run>>,
+    mut sfx: ResMut<crate::audio::Sfx>,
+    mut music: ResMut<crate::audio::Music>,
 ) {
     let Some(mut bv) = bv else { return };
     let (Some(mut ex), Some(mut runres)) = (ex, runres) else {
@@ -396,6 +409,7 @@ fn run(
     }
     if let Some(ev) = bv.queue.pop_front() {
         let wait = present(
+            &mut sfx,
             &mut commands,
             &mut bv,
             &ev,
@@ -445,6 +459,8 @@ fn run(
         return;
     }
     if let Some(o) = bv.over {
+        *music = crate::audio::Music::Crypt;
+        sfx.play(crate::audio::COIN, -6.0);
         finish(
             &mut commands,
             &mut bv,
@@ -478,6 +494,7 @@ fn pos_of(bv: &BattleView, uid: UnitId, xforms: &Query<&GlobalTransform>) -> Vec
 /// Play one event on the stage; returns how long to dwell on it.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn present(
+    sfx: &mut crate::audio::Sfx,
     commands: &mut Commands,
     bv: &mut BattleView,
     ev: &Event,
@@ -526,6 +543,17 @@ fn present(
             targets,
         } => {
             bv.stack.clear();
+            bv.last = Some((*actor, *skill));
+            bv.beat += 1;
+            if let Some(m) = bv.battle.units[*actor].monster() {
+                let s = crate::audio::monster_sound(m.id, crate::audio::Voice::Attack, bv.beat);
+                sfx.play(s, -4.0);
+            } else if !matches!(skill.kind, SkillKind::Melee | SkillKind::Ranged) {
+                sfx.play(
+                    crate::audio::skill_sound(skill.id, skill.kind, false, bv.beat),
+                    -6.0,
+                );
+            }
             let melee = skill.kind == SkillKind::Melee;
             if let Some(e) = bv.actors.get(actor) {
                 if let Ok(mut a) = actors.get_mut(*e) {
@@ -542,6 +570,7 @@ fn present(
             0.75
         }
         Event::Miss(t) => {
+            sfx.play(crate::audio::MISS, -6.0);
             float(commands, bv, *t, "Miss".into(), BONE, 24.0);
             play(
                 anims,
@@ -558,6 +587,22 @@ fn present(
         } => {
             let a = *amount;
             view(views, bv, *target, &mut |v| v.hp = (v.hp - a).max(0));
+            bv.beat += 1;
+            if let Some((_, s)) = bv.last {
+                let physical = matches!(s.kind, SkillKind::Melee | SkillKind::Ranged);
+                if physical || bv.battle.units[*target].side == Side::Heroes {
+                    sfx.play(
+                        crate::audio::skill_sound(s.id, s.kind, *crit, bv.beat),
+                        -3.0,
+                    );
+                }
+            }
+            if let Some(m) = bv.battle.units[*target].monster() {
+                if bv.battle.units[*target].alive {
+                    let s = crate::audio::monster_sound(m.id, crate::audio::Voice::Wound, bv.beat);
+                    sfx.play(s, -7.0);
+                }
+            }
             if *crit {
                 float(
                     commands,
@@ -587,6 +632,7 @@ fn present(
             amount,
             crit,
         } => {
+            sfx.play("Sound\\Spells\\Heal_Low_Base.wav", -8.0);
             let a = *amount;
             view(views, bv, *target, &mut |v| {
                 v.hp = (v.hp + a).min(v.max_hp);
@@ -684,6 +730,12 @@ fn present(
             0.7
         }
         Event::Died(t) => {
+            if let Some(m) = bv.battle.units[*t].monster() {
+                sfx.play(
+                    crate::audio::monster_sound(m.id, crate::audio::Voice::Death, 0),
+                    -3.0,
+                );
+            }
             play(anims, bv, *t, PlayAnim::hold(anim::DEATH));
             let hero = bv.battle.units[*t].side == Side::Heroes;
             if hero {
@@ -737,6 +789,7 @@ fn present(
             0.35
         }
         Event::Afflicted(t, a) => {
+            sfx.play(crate::audio::AFFLICTION, -4.0);
             float(
                 commands,
                 bv,
@@ -755,6 +808,7 @@ fn present(
             1.6
         }
         Event::Virtuous(t, v) => {
+            sfx.play(crate::audio::VIRTUE, -4.0);
             float(
                 commands,
                 bv,
@@ -933,7 +987,10 @@ fn sync_views(bv: Option<Res<BattleView>>, mut views: Query<(&Actor, &mut ActorV
     let current = bv.battle.current.or(bv.awaiting);
     for (a, mut v) in &mut views {
         let Some(uid) = a.unit else { continue };
-        let u = &bv.battle.units[uid];
+        // A battle just finished leaves its fading monsters pointing past the emptied roster.
+        let Some(u) = bv.battle.units.get(uid) else {
+            continue;
+        };
         // Hit points and stress follow the replay; statuses and marks follow the rules' state.
         if bv.queue.is_empty() && bv.wait <= 0.0 {
             v.hp = u.hp;

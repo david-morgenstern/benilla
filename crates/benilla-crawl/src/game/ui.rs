@@ -401,6 +401,7 @@ fn spawn_overlay(mut commands: Commands, fonts: Res<Fonts>) {
 
 #[allow(clippy::type_complexity)]
 fn button_looks(
+    mut sfx: ResMut<crate::audio::Sfx>,
     mut q: Query<
         (&Interaction, &BtnLook, &mut BackgroundColor),
         (Changed<Interaction>, With<Button>),
@@ -410,6 +411,9 @@ fn button_looks(
         if !look.enabled {
             bg.0 = BTN_OFF;
             continue;
+        }
+        if *i == Interaction::Pressed {
+            sfx.play(crate::audio::CLICK, -14.0);
         }
         bg.0 = match i {
             Interaction::Pressed => BTN_DOWN,

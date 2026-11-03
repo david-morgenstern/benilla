@@ -302,7 +302,9 @@ fn walk(
         };
         ex.dirty = true;
     }
-    let walking = ex.mode == Mode::Walking;
+    let in_hall = matches!(run.0.dungeon.at, Location::Hall { .. });
+    let held = keys.pressed(KeyCode::KeyD) || keys.pressed(KeyCode::ArrowRight);
+    let walking = ex.mode == Mode::Walking || (held && in_hall && ex.mode == Mode::Idle);
     for (a, mut p) in &mut anims {
         if a.side == Side::Heroes {
             let want = if walking { anim::WALK } else { anim::STAND };
@@ -353,17 +355,28 @@ fn walk(
     handle_encounter(&mut commands, &mut ex, &run, enc, &mut narrator);
 }
 
-fn sync_hero_views(run: Res<Run>, ex: Res<Explore>, mut q: Query<(&Actor, &mut ActorView)>) {
+fn sync_hero_views(
+    mut commands: Commands,
+    run: Res<Run>,
+    ex: Res<Explore>,
+    mut q: Query<(Entity, &mut Actor, &mut ActorView)>,
+) {
     if ex.mode == Mode::Battle {
         return;
     }
-    for (a, mut v) in &mut q {
+    for (e, mut a, mut v) in &mut q {
         let Some(id) = a.hero else {
             continue;
         };
         let Some((i, h)) = run.0.party.iter().enumerate().find(|(_, h)| h.id == id) else {
+            // Lost outside battle (a heart gave out): off the stage.
+            commands.entity(e).try_despawn();
             continue;
         };
+        let home = stage::slot(Side::Heroes, (i + 1) as f32);
+        if a.home != home {
+            a.home = home;
+        }
         v.hp = h.hp;
         v.max_hp = h.max_hp();
         v.stress = Some(h.stress);
