@@ -112,9 +112,7 @@ fn enter_hamlet(
     let selected = game.as_ref().and_then(|g| g.0.roster.first().map(|h| h.id));
     if let Some(g) = &game {
         if g.0.week == 1 && g.0.runs == 0 {
-            narrator.say(
-                "Click the buildings of the hamlet. When the party is ready, click the estate.",
-            );
+            narrator.say("Click the buildings of the hamlet. When the party is ready, Embark.");
         } else {
             narrator.say(g.0.event.text());
         }
@@ -548,7 +546,7 @@ fn rebuild_hamlet(
     let Some(panel) = ui_state.open else {
         commands.spawn((
             Node { position_type: PositionType::Absolute, bottom: Val::Px(14.0), left: Val::Px(16.0), ..default() },
-            kit.text("Click a building to enter it. Click the estate on the hill to embark. Click a hero for their sheet.", 15.0, BONE),
+            kit.text("Click a building to enter it, a hero for their sheet, and Embark when the party is ready.", 15.0, BONE),
             TextShadow::default(),
             UiRoot,
             scoped,

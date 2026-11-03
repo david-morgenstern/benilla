@@ -119,6 +119,9 @@ pub enum ModelSource {
     Prop(String, Option<String>),
     /// A WMO building by path, with its first doodad set and fixture lights.
     Wmo(String),
+    /// A WMO where the map placed it: its own origin (not centred on its footprint), with doodad
+    /// set 0 and the placement's set.
+    WmoPlaced(String, u16),
 }
 
 /// Ask for a model on this entity; it is built under it once the M2 loads.
@@ -243,7 +246,9 @@ fn model_path(data: &WowData, source: &ModelSource) -> Option<String> {
             let sex = if look.sex == 1 { "Female" } else { "Male" };
             Some(format!("Character\\{race}\\{sex}\\{race}{sex}.m2"))
         }
-        ModelSource::Prop(p, _) | ModelSource::Wmo(p) => Some(p.clone()),
+        ModelSource::Prop(p, _) | ModelSource::Wmo(p) | ModelSource::WmoPlaced(p, _) => {
+            Some(p.clone())
+        }
     }
 }
 
@@ -266,7 +271,7 @@ fn start_loads(
             commands.entity(e).remove::<WowModel>();
             continue;
         };
-        if let ModelSource::Wmo(p) = &req.source {
+        if let ModelSource::Wmo(p) | ModelSource::WmoPlaced(p, _) = &req.source {
             commands
                 .entity(e)
                 .insert(PendingWmo(asset_server.load(wmo_url(p))));
@@ -548,7 +553,7 @@ fn build_models(
                     &eq,
                 ));
             }
-            ModelSource::Wmo(_) => {}
+            ModelSource::Wmo(_) | ModelSource::WmoPlaced(..) => {}
             ModelSource::Prop(_, tex) => {
                 object_tex = tex
                     .as_ref()
@@ -840,15 +845,24 @@ fn build_wmos(
             }
             continue;
         };
-        // Centre the building on its footprint, its floor on the ground.
-        let offset = w.collision_bounds.map_or(Vec3::ZERO, |(lo, hi)| {
-            let (a, b) = (
-                benilla_assets::coords::wow_to_bevy(lo),
-                benilla_assets::coords::wow_to_bevy(hi),
-            );
-            let (mn, mx) = (a.min(b), a.max(b));
-            Vec3::new(-(mn.x + mx.x) / 2.0, -mn.y, -(mn.z + mx.z) / 2.0)
-        });
+        // Centre the building on its footprint, its floor on the ground; a map placement keeps
+        // the model's own origin, which the placement position names.
+        let placed_set = match &req.source {
+            ModelSource::WmoPlaced(_, set) => Some(usize::from(*set)),
+            _ => None,
+        };
+        let offset = if placed_set.is_some() {
+            Vec3::ZERO
+        } else {
+            w.collision_bounds.map_or(Vec3::ZERO, |(lo, hi)| {
+                let (a, b) = (
+                    benilla_assets::coords::wow_to_bevy(lo),
+                    benilla_assets::coords::wow_to_bevy(hi),
+                );
+                let (mn, mx) = (a.min(b), a.max(b));
+                Vec3::new(-(mn.x + mx.x) / 2.0, -mn.y, -(mn.z + mx.z) / 2.0)
+            })
+        };
         let root = commands
             .spawn((Transform::from_translation(offset), Visibility::default()))
             .id();
@@ -888,8 +902,13 @@ fn build_wmos(
                 .id();
             commands.entity(root).add_child(part);
         }
-        // Set 0, the doodads every placement shows.
-        if let Some(set) = w.doodad_sets.first() {
+        // Set 0, the doodads every placement shows, and a map placement's own set.
+        let sets = [Some(0), placed_set.filter(|s| *s != 0)];
+        for set in sets
+            .into_iter()
+            .flatten()
+            .filter_map(|i| w.doodad_sets.get(i))
+        {
             let start = set.start as usize;
             for d in w.doodads.iter().skip(start).take(set.count as usize) {
                 if d.model.is_empty() {

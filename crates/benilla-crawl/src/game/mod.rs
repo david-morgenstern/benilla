@@ -6,6 +6,7 @@ use crate::rules::dungeon::Expedition;
 use crate::rules::town::{Campaign, Debrief};
 
 pub mod battle;
+pub mod darkshire;
 pub mod explore;
 pub mod hamlet;
 pub mod looks;

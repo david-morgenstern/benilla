@@ -133,11 +133,14 @@ impl Plugin for StagePlugin {
     }
 }
 
+/// The stage camera's vertical field of view, degrees.
+pub const STAGE_FOV: f32 = 34.0;
+
 fn spawn_camera(mut commands: Commands) {
     commands.spawn((
         Camera3d::default(),
         Projection::from(PerspectiveProjection {
-            fov: 34f32.to_radians(),
+            fov: STAGE_FOV.to_radians(),
             near: 0.1,
             far: 200.0,
             ..default()

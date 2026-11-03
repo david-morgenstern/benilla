@@ -13,9 +13,10 @@ binary in a packaged build). The install is only read.
 
 ## Playing
 
-**The hamlet** is a moonlit Darkshire square. Click a building's sign to enter it, a hero in the
-roster for their character sheet, and the estate on the hill (or *Embark*) to choose an
-expedition.
+**The hamlet** is Darkshire itself, built from your install's own map: the town hall faces you
+across its fountain square at night. Click a building's sign to enter it, a hero in the roster for
+their character sheet, and *Embark* to choose an expedition. `CRAWL_TOWNCAM=x,y,z,lx,ly,lz` and
+`CRAWL_TOWNFOV=<degrees>` move the hamlet's camera, for framing.
 
 | Building | What it does | Rebuilt with heirlooms |
 | --- | --- | --- |
